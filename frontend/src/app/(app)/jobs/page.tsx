@@ -6,7 +6,8 @@ import { JobFilters } from '@/components/jobs/JobFilters'
 import { JobDetail } from '@/components/jobs/JobDetail'
 import { SyncProgressBar } from '@/components/jobs/SyncProgressBar'
 import { useJobs, useSyncJobs, defaultFilters, type JobFilters as Filters, type SortBy } from '@/hooks/useJobs'
-import { useCreateApplication } from '@/hooks/useApplications'
+import { useAppliedJobIds, useCreateApplication } from '@/hooks/useApplications'
+import { useViewedJobs } from '@/hooks/useViewedJobs'
 import { useDesiredRoles } from '@/hooks/useDesiredRoles'
 import { useToast } from '@/store/toast.store'
 import { useAuthStore } from '@/store/auth.store'
@@ -26,6 +27,8 @@ export default function JobsPage() {
   const { data, isLoading, isError, error, isFetchingNextPage, hasNextPage, fetchNextPage } = useJobs(filters)
   const { isSyncing, progress, message, status, jobsFound, startSync } = useSyncJobs()
   const createApplication = useCreateApplication()
+  const appliedJobIds = useAppliedJobIds()
+  const { viewed, markViewed } = useViewedJobs()
   const { data: desiredRoles = [] } = useDesiredRoles()
 
   // Toast on sync completion / failure
@@ -73,6 +76,15 @@ export default function JobsPage() {
       setApplyingId(null)
     }
   }, [applyingId, createApplication, toast])
+
+  const handleExpand = useCallback((job: Job) => {
+    markViewed(job.id)
+    setSelectedJob(job)
+  }, [markViewed])
+
+  const handleView = useCallback((job: Job) => {
+    markViewed(job.id)
+  }, [markViewed])
 
   const handleFiltersChange = (f: Filters) => {
     setFilters(f)
@@ -291,8 +303,11 @@ export default function JobsPage() {
                   key={job.id}
                   job={job}
                   onApply={handleApply}
-                  onExpand={setSelectedJob}
+                  onExpand={handleExpand}
+                  onView={handleView}
                   applying={applyingId === job.id}
+                  applied={appliedJobIds.has(job.id)}
+                  viewed={viewed.has(job.id)}
                 />
               ))}
             </div>

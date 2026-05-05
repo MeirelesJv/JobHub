@@ -324,7 +324,11 @@ def sync_jobs_for_user(self, user_id: int, platforms: list[str] | None = None) -
     finally:
         db.close()
 
-    msg = f"Concluído — {total_new} nova{'s' if total_new != 1 else ''} vaga{'s' if total_new != 1 else ''} encontrada{'s' if total_new != 1 else ''}"
+    msg = (
+        f"Concluído — {total_found} vaga{'s' if total_found != 1 else ''} encontrada"
+        f"{'s' if total_found != 1 else ''}, "
+        f"{total_new} nova{'s' if total_new != 1 else ''}"
+    )
     logger.info("sync_jobs_for_user(%d): %d encontradas, %d novas", user_id, total_found, total_new)
     return {"progress": 100, "message": msg, "jobs_found": total_found, "jobs_new": total_new}
 

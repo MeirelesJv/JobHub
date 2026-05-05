@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMemo } from 'react'
 import api from '@/lib/api'
 import type { Application, ApplicationStats } from '@/types'
 
@@ -9,9 +10,20 @@ export function useCreateApplication() {
       api.post<Application>('/api/applications', { job_id, mode: 'manual' }).then((r) => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['application-stats'] })
+      qc.invalidateQueries({ queryKey: ['applications'] })
       qc.invalidateQueries({ queryKey: ['kanban'] })
     },
   })
+}
+
+export function useAppliedJobIds(): Set<number> {
+  const { data } = useQuery<Application[]>({
+    queryKey: ['applications'],
+    queryFn: () => api.get<Application[]>('/api/applications').then((r) => r.data),
+    staleTime: 60_000,
+  })
+
+  return useMemo(() => new Set(data?.map((application) => application.job_id) ?? []), [data])
 }
 
 export function useApplicationStats() {

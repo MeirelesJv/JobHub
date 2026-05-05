@@ -39,19 +39,27 @@ def _normalize(text: str) -> str:
 
 
 def _role_tokens(role_name: str) -> set[str]:
-    return {
+    normalized = _normalize(role_name)
+    tokens = {
         token for token in re.split(r"\W+", _normalize(role_name))
         if len(token) >= 3 and token not in _STOPWORDS
     }
+    if "banco de dados" in normalized:
+        tokens.discard("banco")
+    return tokens
 
 
 def _term_variants(term: str) -> set[str]:
     variants = {term}
+    if term in {"dado", "dados"}:
+        variants.update({"data", "database", "bi", "sql", "dba"})
+    if term == "dba":
+        variants.update({"database", "sql"})
     if term.endswith("s") and len(term) > 4:
         variants.add(term[:-1])
     else:
         variants.add(f"{term}s")
-    return variants
+    return {variant for variant in variants if len(variant) >= 3}
 
 
 def _title_contains_any(terms: set[str]):

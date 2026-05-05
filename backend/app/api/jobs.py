@@ -154,6 +154,7 @@ def get_sync_status(
             "status":   "completed",
             "progress": 100,
             "message":  info.get("message", "Concluído"),
+            "jobs_found": info.get("jobs_found", 0),
             "jobs_new": info.get("jobs_new", 0),
         }
     if result.state == "FAILURE":

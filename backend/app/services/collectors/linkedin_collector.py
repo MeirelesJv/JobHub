@@ -4,8 +4,10 @@ Coleta vagas do LinkedIn via API guest paginada (sem autenticação).
 import logging
 import random
 import re
+import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -36,6 +38,8 @@ HEADERS = {
     "Referer":         "https://www.linkedin.com/jobs/search/",
 }
 
+_thread_local = threading.local()
+
 # Localidades que indicam vaga fora do Brasil (não-remotas)
 _FOREIGN_MARKERS = frozenset([
     "united states", "new york", "san francisco", "los angeles",
@@ -46,6 +50,12 @@ _FOREIGN_MARKERS = frozenset([
 ])
 
 _REMOTE_KEYWORDS = frozenset(["remoto", "remote", "home office", "híbrido", "hibrido"])
+_STOPWORDS = frozenset(["a", "as", "o", "os", "de", "da", "das", "do", "dos", "e", "em", "para"])
+_BROAD_ROLE_TERMS = frozenset([
+    "analista", "analyst", "especialista", "specialist",
+    "desenvolvedor", "developer", "dev", "programador", "engineer", "engenheiro",
+    "designer", "gerente", "manager", "lead", "lider", "diretor", "director", "head",
+])
 
 # Grupos de sinônimos para filtro de título
 _SYNONYM_GROUPS: list[frozenset[str]] = [
@@ -72,6 +82,14 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _normalize(text: str) -> str:
+    import unicodedata
+
+    normalized = unicodedata.normalize("NFKD", text.lower())
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", ascii_text).strip()
+
+
 def _strip_html(html: str) -> str:
     return html_to_text(html)
 
@@ -87,10 +105,55 @@ def _expand_keyword(keyword: str) -> frozenset[str]:
     return frozenset(expanded)
 
 
-def _title_matches(title: str, expanded: frozenset[str]) -> bool:
-    """Retorna True se o título contém ao menos um termo do cargo (ou sinônimo)."""
-    title_lower = title.lower()
-    return any(term in title_lower for term in expanded)
+def _term_variants(term: str) -> set[str]:
+    variants = {term}
+    if term in {"dado", "dados"}:
+        variants.update({"data", "database", "bi", "sql", "dba"})
+    if term == "dba":
+        variants.update({"database", "sql"})
+    if term.endswith("s") and len(term) > 4:
+        variants.add(term[:-1])
+    else:
+        variants.add(f"{term}s")
+    for group in _SYNONYM_GROUPS:
+        if term in group:
+            variants.update(group)
+    return variants
+
+
+def _required_title_groups(keyword: str) -> list[set[str]]:
+    normalized = _normalize(keyword)
+    tokens = {
+        token for token in re.split(r"\W+", normalized)
+        if len(token) >= 3 and token not in _STOPWORDS
+    }
+    if "banco de dados" in normalized:
+        tokens.discard("banco")
+
+    broad_terms = tokens & _BROAD_ROLE_TERMS
+    specific_terms = tokens - _BROAD_ROLE_TERMS
+
+    groups = [_term_variants(term) for term in sorted(specific_terms)]
+    if broad_terms:
+        broad_group: set[str] = set()
+        for term in broad_terms:
+            broad_group.update(_term_variants(term))
+        groups.append(broad_group)
+    return groups
+
+
+def _contains_term(text: str, term: str) -> bool:
+    if len(term) <= 2:
+        return re.search(rf"\b{re.escape(term)}\b", text) is not None
+    return term in text
+
+
+def _title_matches(title: str, expanded: frozenset[str], required_groups: list[set[str]] | None = None) -> bool:
+    """Retorna True se o título bate com o cargo buscado."""
+    title_lower = _normalize(title)
+    if required_groups:
+        return all(any(_contains_term(title_lower, term) for term in group) for group in required_groups)
+    return any(_contains_term(title_lower, term) for term in expanded)
 
 
 def _is_foreign(location: str | None) -> bool:
@@ -147,12 +210,28 @@ def _detect_easy_apply(html: str) -> bool:
     return "apply-button--default" in html and "offsite-apply-icon" not in html
 
 
-def _fetch_detail(job_id: str, max_retries: int = 3) -> tuple[str | None, bool]:
+def _get_thread_client() -> httpx.Client:
+    client = getattr(_thread_local, "client", None)
+    if client is None or client.is_closed:
+        client = httpx.Client(headers=HEADERS, follow_redirects=True)
+        _thread_local.client = client
+    return client
+
+
+def _fetch_detail(
+    job_id: str,
+    client: httpx.Client | None = None,
+    max_retries: int = 3,
+) -> tuple[str | None, bool]:
     """Returns (description, easy_apply)."""
     url = DETAIL_API.format(job_id=job_id)
+    get = client.get if client else httpx.get
     for attempt in range(max_retries):
         try:
-            resp = httpx.get(url, headers=HEADERS, timeout=10)
+            kwargs = {"timeout": 10}
+            if client is None:
+                kwargs["headers"] = HEADERS
+            resp = get(url, **kwargs)
             if resp.status_code == 429:
                 wait = (2 ** attempt) * random.uniform(5, 10)
                 logger.warning("LinkedIn 429 for %s, waiting %.1fs (attempt %d/%d)", job_id, wait, attempt + 1, max_retries)
@@ -160,13 +239,57 @@ def _fetch_detail(job_id: str, max_retries: int = 3) -> tuple[str | None, bool]:
                 continue
             resp.raise_for_status()
             return _extract_description(resp.text), _detect_easy_apply(resp.text)
-        except httpx.HTTPStatusError:
-            raise
+        except httpx.HTTPStatusError as exc:
+            logger.debug("LinkedIn detail HTTP error for %s: %s", job_id, exc)
+            return None, False
         except Exception as exc:
             logger.debug("LinkedIn detail failed for %s: %s", job_id, exc)
             return None, False
     logger.warning("LinkedIn detail gave up after %d retries for %s", max_retries, job_id)
     return None, False
+
+
+def _fetch_details_parallel(
+    candidates: list[dict],
+    existing_map: dict,
+    on_progress: Callable[[str], None] | None = None,
+    max_workers: int = 3,
+) -> None:
+    """Enriquece candidates in-place e pula vagas que ja tem descricao no DB."""
+    to_fetch: list[dict] = []
+    for job_data in candidates:
+        existing = existing_map.get(job_data["external_id"])
+        if existing and existing.description:
+            job_data["description"] = existing.description
+            job_data["easy_apply"] = existing.easy_apply or False
+        else:
+            to_fetch.append(job_data)
+
+    if not to_fetch:
+        return
+
+    total = len(to_fetch)
+
+    def _worker(args: tuple[int, dict]) -> None:
+        worker_idx, job_data = args
+        time.sleep(worker_idx % max_workers * 0.4)
+        try:
+            description, easy_apply = _fetch_detail(
+                job_data["external_id"],
+                client=_get_thread_client(),
+            )
+            if description:
+                job_data["description"] = description
+            job_data["easy_apply"] = easy_apply
+            time.sleep(random.uniform(1.0, 1.5))
+        except Exception as exc:
+            job_data["easy_apply"] = False
+            logger.debug("LinkedIn detail worker failed for %s: %s", job_data["external_id"], exc)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(_worker, enumerate(to_fetch)))
+    if on_progress:
+        on_progress(f"detalhes {total}/{total}")
 
 
 def _parse_cards(html: str) -> list[dict]:
@@ -211,6 +334,7 @@ def _parse_cards(html: str) -> list[dict]:
 def _fetch_all_pages(
     base_params: dict,
     expanded: frozenset[str],
+    required_groups: list[set[str]] | None = None,
     on_progress: Callable[[str], None] | None = None,
     label: str = "página",
 ) -> list[dict]:
@@ -238,7 +362,7 @@ def _fetch_all_pages(
             logger.info("LinkedIn: nenhum card retornado na página %d", page)
             break
 
-        matched = [c for c in cards if _title_matches(c["title"], expanded)]
+        matched = [c for c in cards if _title_matches(c["title"], expanded, required_groups)]
         logger.info("LinkedIn: %d/%d vagas passaram no filtro de título", len(matched), len(cards))
 
         for job in matched:
@@ -258,7 +382,7 @@ def _fetch_all_pages(
                 break
 
         if page < MAX_PAGES - 1:
-            time.sleep(random.uniform(2, 4))
+            time.sleep(random.uniform(1.5, 2.5))
 
     return list(collected.values())
 
@@ -276,6 +400,7 @@ def collect(
 
     city = None if location.lower() in ("brasil", "brazil", "") else location
     expanded = _expand_keyword(keyword)
+    required_groups = _required_title_groups(keyword)
 
     jobs_found = 0
     jobs_new   = 0
@@ -292,7 +417,7 @@ def collect(
             "f_TPR":    "r2592000",
             "count":    PAGE_SIZE,
         }
-        for job in _fetch_all_pages(city_params, expanded, on_progress=on_progress, label="cidade pg"):
+        for job in _fetch_all_pages(city_params, expanded, required_groups, on_progress=on_progress, label="cidade pg"):
             jobs_by_id[job["external_id"]] = job
 
         # Busca 2: vagas remotas no Brasil (apenas quando há cidade específica)
@@ -307,7 +432,7 @@ def collect(
                 "f_WT":     "2",  # remote work type
                 "count":    PAGE_SIZE,
             }
-            for job in _fetch_all_pages(remote_params, expanded, on_progress=on_progress, label="remoto pg"):
+            for job in _fetch_all_pages(remote_params, expanded, required_groups, on_progress=on_progress, label="remoto pg"):
                 job["remote"] = True  # encontrada via filtro f_WT=2 — garantidamente remota
                 if job["external_id"] in jobs_by_id:
                     jobs_by_id[job["external_id"]]["remote"] = True
@@ -335,22 +460,9 @@ def collect(
             .all()
         }
 
-        total_candidates = len(candidates)
-        for idx, job_data in enumerate(candidates):
-            if on_progress:
-                on_progress(f"detalhes {idx + 1}/{total_candidates}")
-            existing = existing_map.get(job_data["external_id"])
-            if existing and existing.description:
-                job_data["description"] = existing.description
-                job_data["easy_apply"] = existing.easy_apply or False
-                continue
-            description, easy_apply = _fetch_detail(job_data["external_id"])
-            if description:
-                job_data["description"] = description
-            job_data["easy_apply"] = easy_apply
-            time.sleep(random.uniform(1.5, 3))
-
         jobs_found = len(candidates)
+        _fetch_details_parallel(candidates, existing_map, on_progress=on_progress)
+
         existing_ids = set(existing_map.keys())
         for job_data in candidates:
             save_job(db, job_data)

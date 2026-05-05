@@ -10,16 +10,18 @@ Estratégia anti-ban:
   - MAX_SCROLL_PAGES conservador (2 scrolls = 3 páginas totais)
 """
 import logging
+import json
 import random
 import time
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 from sqlalchemy.orm import Session
 
 from app.models.job import JobPlatform
-from app.services.collectors.html_utils import html_to_text
+from app.services.collectors.html_utils import format_gupy_description
 from app.services.job_service import close_sync_log, ensure_platform, open_sync_log, save_job
 
 logger = logging.getLogger(__name__)
@@ -27,8 +29,10 @@ logger = logging.getLogger(__name__)
 PLATFORM_NAME = "Gupy"
 PLATFORM_SLUG = "gupy"
 PORTAL_BASE   = "https://portal.gupy.io"
+PORTAL_API_BASE = "https://employability-portal.gupy.io"
 MAX_SCROLL_PAGES = 2   # scrolls adicionais após a 1ª carga (total: 3 páginas)
 _MAX_AGE = timedelta(days=30)
+_API_PAGE_LIMIT = 100
 
 _VIEWPORTS = [
     {"width": 1920, "height": 1080},
@@ -136,6 +140,11 @@ def _extract_company(raw: dict, job_url: str) -> str:
         v = (raw.get(field) or "").strip()
         if v:
             return v
+    career_page = raw.get("careerPage") or {}
+    v = (career_page.get("name") or "").strip()
+    if v:
+        return v
+
     company_data = raw.get("company") or {}
     v = (company_data.get("name") or company_data.get("careerPageName") or "").strip()
     if v:
@@ -162,22 +171,43 @@ def _parse_job(raw: dict) -> dict | None:
     if not title:
         return None
 
-    city_name  = raw.get("city",  "") or ""
-    state_name = raw.get("state", "") or ""
+    city_name = raw.get("city") or raw.get("addressCity") or ""
+    state_name = raw.get("state") or raw.get("addressState") or ""
     location   = ", ".join(filter(None, [city_name, state_name])) or None
 
-    published_raw = raw.get("publishedDate") or raw.get("createdAt")
+    published_raw = raw.get("publishedDate") or raw.get("publishedAt") or raw.get("createdAt")
     published_at  = None
     if published_raw:
         try:
             published_at = datetime.fromisoformat(published_raw.replace("Z", "+00:00"))
+            if published_at.tzinfo is None:
+                published_at = published_at.replace(tzinfo=timezone.utc)
         except ValueError:
             pass
 
     workplace = (raw.get("workplaceType") or "").lower()
     remote    = workplace in ("remote", "hybrid", "remoto", "híbrido")
 
-    job_url = raw.get("jobUrl") or f"https://portal.gupy.io/job/{job_id}"
+    expires_at = None
+    expires_raw = raw.get("applicationDeadline") or raw.get("expiresAt") or raw.get("registerEndDate")
+    if expires_raw:
+        try:
+            expires_at = datetime.fromisoformat(expires_raw.replace("Z", "+00:00"))
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+
+    subdomain = (
+        raw.get("subdomain")
+        or (raw.get("company") or {}).get("subdomain")
+        or (raw.get("careerPage") or {}).get("subdomain")
+    )
+    job_url = raw.get("jobUrl")
+    if not job_url and subdomain:
+        job_url = f"https://{subdomain}.gupy.io/jobs/{job_id}?jobBoardSource=gupy_public_page"
+    if not job_url:
+        job_url = f"https://portal.gupy.io/job/{job_id}"
     company = _extract_company(raw, job_url)
 
     return {
@@ -185,10 +215,11 @@ def _parse_job(raw: dict) -> dict | None:
         "title":        title,
         "company":      company,
         "location":     location,
-        "description":  html_to_text(raw.get("description") or ""),
+        "description":  format_gupy_description(raw.get("description")),
         "platform":     JobPlatform.GUPY,
         "url":          job_url,
         "published_at": published_at,
+        "expires_at":    expires_at,
         "remote":       remote,
         "is_active":    True,
     }
@@ -207,6 +238,119 @@ def _build_search_url(keyword: str, state: str | None) -> str:
     return f"{PORTAL_BASE}/job-search/" + "&".join(parts)
 
 
+def _wait_for_jobs_api(page, timeout: int) -> None:
+    wait_for_response = getattr(page, "wait_for_response", None)
+    if wait_for_response is not None:
+        wait_for_response(_is_jobs_api_response, timeout=timeout)
+        return
+    page.wait_for_timeout(min(timeout, 2_000))
+
+
+def _build_jobs_api_url(keyword: str, offset: int = 0) -> str:
+    params = {
+        "jobName": keyword,
+        "limit": str(_API_PAGE_LIMIT),
+        "offset": str(offset),
+    }
+    return f"{PORTAL_API_BASE}/api/v1/jobs?{urlencode(params)}"
+
+
+def _is_jobs_api_response(resp) -> bool:
+    return "/api/v1/jobs" in resp.url and resp.status == 200
+
+
+def _job_passes_filters(
+    job: dict,
+    state: str | None,
+    expanded: frozenset[str],
+    cutoff: datetime,
+) -> bool:
+    if job["published_at"] is not None and job["published_at"] < cutoff:
+        return False
+    if job.get("expires_at") is not None and job["expires_at"] < datetime.now(timezone.utc):
+        return False
+    if not _title_matches(job["title"], expanded):
+        return False
+    if state and not job.get("remote"):
+        loc = (job.get("location") or "").lower()
+        if state.lower() not in loc:
+            return False
+    return True
+
+
+def _deactivate_stale_jobs(db: Session) -> None:
+    from app.models.job import Job
+    from sqlalchemy import or_
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - _MAX_AGE
+    stale_count = (
+        db.query(Job)
+        .filter(
+            Job.platform == JobPlatform.GUPY,
+            Job.is_active.is_(True),
+            or_(
+                Job.published_at.isnot(None) & (Job.published_at < cutoff),
+                Job.expires_at.isnot(None) & (Job.expires_at < now),
+            ),
+        )
+        .update({Job.is_active: False}, synchronize_session=False)
+    )
+    if stale_count:
+        logger.info("Gupy: %d vagas antigas/expiradas marcadas como inativas", stale_count)
+        db.commit()
+
+
+def _fetch_keyword_via_api(
+    keyword: str,
+    state: str | None,
+    expanded: frozenset[str],
+) -> list[dict]:
+    collected: dict[str, dict] = {}
+    cutoff = datetime.now(timezone.utc) - _MAX_AGE
+
+    for page_n in range(MAX_SCROLL_PAGES + 1):
+        offset = page_n * _API_PAGE_LIMIT
+        url = _build_jobs_api_url(keyword, offset=offset)
+        req = Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8",
+                "Referer": _build_search_url(keyword, state=None),
+                "User-Agent": random.choice(_USER_AGENTS),
+            },
+        )
+        try:
+            with urlopen(req, timeout=20) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            logger.debug("Gupy API falhou em %s: %s", url, exc)
+            break
+
+        batch = payload.get("data") if isinstance(payload, dict) else None
+        if not batch:
+            break
+
+        added = 0
+        for raw in batch:
+            job = _parse_job(raw)
+            if not job or not _job_passes_filters(job, state, expanded, cutoff):
+                continue
+            if job["external_id"] not in collected:
+                collected[job["external_id"]] = job
+                added += 1
+
+        logger.info("Gupy API: pagina %d -> +%d vagas", page_n + 1, added)
+
+        pagination = payload.get("pagination") or {}
+        total = pagination.get("total")
+        if added == 0 or total is None or offset + _API_PAGE_LIMIT >= total:
+            break
+
+    return list(collected.values())
+
+
 def _fetch_keyword_in_browser(
     browser,
     keyword: str,
@@ -217,6 +361,10 @@ def _fetch_keyword_in_browser(
     Usa um browser aberto para interceptar a API de vagas,
     paginar via scroll e retornar vagas que batem no keyword/localizacao.
     """
+    api_jobs = _fetch_keyword_via_api(keyword, state, expanded)
+    if api_jobs:
+        return api_jobs
+
     collected: dict[str, dict] = {}
     cutoff = datetime.now(timezone.utc) - _MAX_AGE
 
@@ -236,9 +384,6 @@ def _fetch_keyword_in_browser(
 
     # Buffer das respostas interceptadas entre cada scroll
     _pending: list[list[dict]] = []
-
-    def _is_jobs_api_response(resp) -> bool:
-        return "/api/v1/jobs" in resp.url and resp.status == 200
 
     def _on_response(resp):
         # Captura qualquer chamada à API de vagas do portal
@@ -264,14 +409,8 @@ def _fetch_keyword_in_browser(
                 job = _parse_job(raw)
                 if not job:
                     continue
-                if job["published_at"] is not None and job["published_at"] < cutoff:
+                if not _job_passes_filters(job, state, expanded, cutoff):
                     continue
-                if not _title_matches(job["title"], expanded):
-                    continue
-                if state and not job.get("remote"):
-                    loc = (job.get("location") or "").lower()
-                    if state.lower() not in loc:
-                        continue
                 if job["external_id"] not in collected:
                     collected[job["external_id"]] = job
                     added += 1
@@ -284,7 +423,7 @@ def _fetch_keyword_in_browser(
         try:
             page.goto(search_url, wait_until="domcontentloaded", timeout=30_000)
             if not _pending:
-                page.wait_for_response(_is_jobs_api_response, timeout=15_000)
+                _wait_for_jobs_api(page, timeout=15_000)
             time.sleep(0.8)
         except PWTimeout:
             logger.warning("Gupy: API nao respondeu na carga inicial")
@@ -308,7 +447,7 @@ def _fetch_keyword_in_browser(
 
             try:
                 if not _pending:
-                    page.wait_for_response(_is_jobs_api_response, timeout=6_000)
+                    _wait_for_jobs_api(page, timeout=6_000)
                 time.sleep(0.5)
             except PWTimeout:
                 pass
@@ -343,6 +482,8 @@ def collect_batch(
     jobs_found = 0
     jobs_new   = 0
     try:
+        _deactivate_stale_jobs(db)
+
         all_jobs: dict[str, dict] = {}
 
         with sync_playwright() as pw:

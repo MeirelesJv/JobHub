@@ -1,6 +1,7 @@
 """
 Coleta vagas da Catho via curl_cffi (impersonate Chrome para bypass de bot detection).
 """
+import json
 import logging
 import re
 import time
@@ -20,11 +21,12 @@ PLATFORM_NAME = "Catho"
 PLATFORM_SLUG = "catho"
 BASE_URL = "https://www.catho.com.br"
 PAGE_SIZE = 20
-MAX_PAGES = 3
+MAX_PAGES = 12
+FETCH_RETRIES = 3
 
 _HEADERS = {"Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8"}
 _REMOTE_KEYWORDS = frozenset(["home office", "remoto", "remote", "híbrido", "hibrido", "trabalhe de casa"])
-_MAX_AGE = timedelta(days=60)
+_MAX_AGE = timedelta(days=30)
 _CITY_STATES = {
     "sao-paulo": "sp",
     "rio-de-janeiro": "rj",
@@ -45,6 +47,7 @@ _COMPANY = re.compile(r'class="text-12">([^<]+)<')
 _LOCATION = re.compile(r'i_job_location[^>]*></span>\s*<strong>[^<]+</strong>\s*-\s*([^<\r\n]+)')
 _SALARY_STR = re.compile(r'i_salary[^>]*></span>\s*<strong>([^<]+)</strong>')
 _DATE_TAG = re.compile(r'class="tag pub_[^"]+">([^<]+)<')
+_NEXT_DATA = re.compile(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.S)
 
 
 def _cffi_get(url: str, timeout: int = 15):
@@ -71,8 +74,10 @@ def _search_url(keyword: str, city: str | None = None, page: int = 1) -> str:
     else:
         location_segment = ""
 
-    page_segment = f"p{page}/" if page > 1 else ""
-    return f"{BASE_URL}/vagas/{keyword_slug}/{location_segment}{page_segment}"
+    url = f"{BASE_URL}/vagas/{keyword_slug}/{location_segment}"
+    if page > 1:
+        return f"{url}?page={page}"
+    return url
 
 
 def _is_remote(title: str, location: str | None, description: str | None = None) -> bool:
@@ -138,8 +143,95 @@ def _parse_salary(text: str) -> tuple[float | None, float | None]:
     return min(numbers), max(numbers)
 
 
-def _parse_cards(html: str) -> list[dict]:
-    segments = _CARD_SEP.split(html)
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _parse_next_salary(raw: dict) -> tuple[float | None, float | None]:
+    salary = raw.get("salario")
+    if isinstance(salary, (int, float)) and salary > 0:
+        return float(salary), None
+    return _parse_salary(raw.get("faixaSalarial") or "")
+
+
+def _format_locations(raw_locations: list[dict] | None) -> str | None:
+    if not raw_locations:
+        return None
+
+    names = []
+    for raw in raw_locations:
+        city = raw.get("cidade")
+        uf = raw.get("uf")
+        if city and uf:
+            names.append(f"{city} - {uf}")
+        elif city:
+            names.append(city)
+
+    return ", ".join(names) if names else None
+
+
+def _parse_next_cards(html_text: str) -> list[dict]:
+    match = _NEXT_DATA.search(html_text)
+    if not match:
+        return []
+
+    try:
+        payload = json.loads(unescape(match.group(1)))
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+    page_props = payload.get("props", {}).get("pageProps", {})
+    jobs = (
+        page_props.get("jobSearch", {})
+        .get("jobSearchResult", {})
+        .get("jobs", [])
+    )
+
+    parsed: list[dict] = []
+    for item in jobs:
+        raw = item.get("job_customized_data") or {}
+        external_id = str(raw.get("id") or item.get("job_id") or "")
+        title = (raw.get("titulo") or "").strip()
+        if not external_id or not title:
+            continue
+
+        company = (
+            (raw.get("anunciante") or {}).get("nome")
+            or (raw.get("contratante") or {}).get("nome")
+            or "Empresa não informada"
+        )
+        location = _format_locations(raw.get("vagas"))
+        description = raw.get("descricao") or None
+        salary_min, salary_max = _parse_next_salary(raw)
+        url = f"{BASE_URL}/vagas/{_ascii_slug(title)}/{external_id}/"
+
+        parsed.append({
+            "external_id": external_id,
+            "title": title,
+            "company": company,
+            "location": location,
+            "description": description,
+            "salary_min": salary_min,
+            "salary_max": salary_max,
+            "job_type": _parse_job_type(raw.get("regimeContrato") or ""),
+            "level": _parse_level(title),
+            "platform": JobPlatform.CATHO,
+            "url": url,
+            "published_at": _parse_iso_datetime(raw.get("data")),
+            "remote": _is_remote(title, location, description),
+            "is_active": True,
+        })
+
+    return parsed
+
+
+def _parse_legacy_cards(html_text: str) -> list[dict]:
+    segments = _CARD_SEP.split(html_text)
     jobs: list[dict] = []
 
     for seg in segments[1:]:
@@ -191,21 +283,34 @@ def _parse_cards(html: str) -> list[dict]:
     return jobs
 
 
+def _parse_cards(html: str) -> list[dict]:
+    jobs_by_id: dict[str, dict] = {}
+    for job in [*_parse_legacy_cards(html), *_parse_next_cards(html)]:
+        jobs_by_id.setdefault(job["external_id"], job)
+    return list(jobs_by_id.values())
+
+
 def _fetch_all_pages(keyword: str, city: str | None, matcher: dict) -> list[dict]:
     collected: dict[str, dict] = {}
     cutoff = datetime.now(timezone.utc) - _MAX_AGE
 
     for page in range(1, MAX_PAGES + 1):
         url = _search_url(keyword, city, page)
-        try:
-            logger.info("Catho GET %s", url)
-            resp = _cffi_get(url)
-            resp.raise_for_status()
-        except Exception as exc:
-            logger.warning("Catho fetch error page=%d kw=%s city=%s: %s", page, keyword, city, exc)
-            break
+        cards: list[dict] = []
+        for attempt in range(1, FETCH_RETRIES + 1):
+            try:
+                logger.info("Catho GET %s attempt=%d", url, attempt)
+                resp = _cffi_get(url)
+                resp.raise_for_status()
+                cards = _parse_cards(resp.text)
+                if cards or attempt == FETCH_RETRIES:
+                    break
+            except Exception as exc:
+                logger.warning("Catho fetch error page=%d attempt=%d kw=%s city=%s: %s", page, attempt, keyword, city, exc)
+                if attempt == FETCH_RETRIES:
+                    return list(collected.values())
+            time.sleep(0.5)
 
-        cards = _parse_cards(resp.text)
         logger.info("Catho page=%d cards=%d", page, len(cards))
 
         if not cards:
