@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "JobHub",
+  "version": "1.0.0",
+  "description": "Agregador de vagas — coleta e candidaturas automáticas",
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "activeTab",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://localhost:3000/*",
+    "http://localhost:8000/*",
+    "https://www.linkedin.com/*",
+    "https://portal.api.gupy.io/*",
+    "https://*.gupy.io/*"
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "public/icons/icon16.png",
+      "48": "public/icons/icon48.png",
+      "128": "public/icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://localhost:3000/*",
+        "https://www.linkedin.com/jobs/*",
+        "https://www.linkedin.com/jobs/search/*",
+        "https://www.linkedin.com/jobs/collections/*",
+        "https://*.gupy.io/*"
+      ],
+      "js": ["src/content/content-script.js"]
+    }
+  ]
+}

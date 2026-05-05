@@ -1,0 +1,11 @@
+{
+  "name": "jobhub-extension",
+  "version": "1.0.0",
+  "description": "JobHub Chrome Extension v1",
+  "scripts": {
+    "generate-icons": "node scripts/generate-icons.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

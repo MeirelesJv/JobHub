@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JobHub</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+
+  <!-- ── Unauthenticated ────────────────────────────────────────────────── -->
+  <div id="state-unauth" class="state hidden">
+    <div class="logo">
+      <div class="logo-icon">J</div>
+      <span class="logo-text">JobHub</span>
+    </div>
+
+    <div class="unauth-body">
+      <p class="unauth-msg">
+        Faça login no JobHub para ativar a sincronização automática de vagas.
+      </p>
+      <button id="btn-open-login" class="btn btn-primary">
+        Abrir JobHub
+      </button>
+    </div>
+  </div>
+
+  <!-- ── Authenticated ──────────────────────────────────────────────────── -->
+  <div id="state-auth" class="state hidden">
+    <div class="logo">
+      <div class="logo-icon">J</div>
+      <span class="logo-text">JobHub</span>
+    </div>
+
+    <div class="user-email" id="user-email">—</div>
+
+    <div class="status-card">
+      <div class="status-indicator">
+        <span class="status-dot"></span>
+        <span class="status-text">Extensão ativa</span>
+      </div>
+      <div class="sync-info" id="last-sync-text">Verificando…</div>
+      <div class="sync-info" id="next-sync-text"></div>
+    </div>
+
+    <button id="btn-sync" class="btn btn-primary">
+      <span id="sync-label">Sincronizar agora</span>
+      <span id="sync-spinner" class="spinner hidden"></span>
+    </button>
+
+    <div class="nav-buttons">
+      <button id="btn-jobs" class="btn btn-outline">Ver vagas</button>
+      <button id="btn-applications" class="btn btn-outline">Candidaturas</button>
+    </div>
+
+    <button id="btn-logout" class="btn btn-ghost">Sair</button>
+  </div>
+
+  <!-- ── Toast ──────────────────────────────────────────────────────────── -->
+  <div id="toast" class="toast"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
