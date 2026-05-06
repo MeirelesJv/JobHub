@@ -1,7 +1,22 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+
+def normalize_company_list(values: list[str] | None) -> list[str]:
+    if not values:
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        company = " ".join(value.strip().split())
+        key = company.casefold()
+        if company and key not in seen:
+            normalized.append(company)
+            seen.add(key)
+    return normalized
 
 
 class UserCreate(BaseModel):
@@ -36,6 +51,7 @@ class UserResponse(BaseModel):
     level_preference: Optional[str]
     remote_preference: bool
     salary_expectation_min: Optional[int]
+    blocked_companies: list[str] = Field(default_factory=list)
     onboarding_completed: bool
     created_at: datetime
 
@@ -50,7 +66,15 @@ class UserProfileUpdate(BaseModel):
     level_preference: Optional[str] = None
     remote_preference: Optional[bool] = None
     salary_expectation_min: Optional[int] = None
+    blocked_companies: Optional[list[str]] = None
     onboarding_completed: Optional[bool] = None
+
+    @field_validator("blocked_companies")
+    @classmethod
+    def clean_blocked_companies(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        return normalize_company_list(v)
 
 
 class TokenResponse(BaseModel):

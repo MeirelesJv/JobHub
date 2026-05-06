@@ -10,6 +10,7 @@ export interface AuthUser {
   level_preference?: string | null
   remote_preference?: boolean
   salary_expectation_min?: number | null
+  blocked_companies?: string[]
   onboarding_completed?: boolean
   created_at: string
 }

@@ -140,6 +140,14 @@ def get_jobs(
             q = q.filter(or_(or_(*city_conds), or_(*remote_conds)))
 
         if user:
+            blocked_companies = [
+                company.strip()
+                for company in (user.blocked_companies or [])
+                if company and company.strip()
+            ]
+            for company in blocked_companies:
+                q = q.filter(~Job.company.ilike(f"%{company}%"))
+
             role_names = [role.role_name for role in user.desired_roles]
             if not role_names and user.desired_role:
                 role_names = [user.desired_role]

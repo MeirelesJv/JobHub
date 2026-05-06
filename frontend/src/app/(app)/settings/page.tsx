@@ -3,11 +3,13 @@
 import { useState } from 'react'
 import { AccountSettings }       from '@/components/settings/AccountSettings'
 import { AppearanceSettings }    from '@/components/settings/AppearanceSettings'
+import { PreferencesSettings }   from '@/components/settings/PreferencesSettings'
 
-type Tab = 'appearance' | 'account'
+type Tab = 'appearance' | 'jobs' | 'account'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'appearance',  label: 'Aparência'   },
+  { id: 'jobs',        label: 'Vagas'        },
   { id: 'account',     label: 'Conta'       },
 ]
 
@@ -18,7 +20,7 @@ export default function SettingsPage() {
     <div className="max-w-2xl mx-auto">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Configurações</h1>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Gerencie sua conta e aparência</p>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Gerencie sua conta, aparência e preferências de vagas</p>
       </div>
 
       {/* Tab bar */}
@@ -50,6 +52,17 @@ export default function SettingsPage() {
               </p>
             </div>
             <AppearanceSettings />
+          </>
+        )}
+        {tab === 'jobs' && (
+          <>
+            <div className="mb-5">
+              <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Preferências de vagas</h2>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+                Ajuste os filtros usados para recomendar vagas.
+              </p>
+            </div>
+            <PreferencesSettings />
           </>
         )}
         {tab === 'account' && (

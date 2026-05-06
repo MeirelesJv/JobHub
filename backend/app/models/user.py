@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, DateTime, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Integer, JSON, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -32,6 +32,7 @@ class User(Base):
     level_preference: Mapped[Optional[str]] = mapped_column(String(50))
     remote_preference: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     salary_expectation_min: Mapped[Optional[int]] = mapped_column(Integer)
+    blocked_companies: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     created_at: Mapped[datetime] = mapped_column(

@@ -29,18 +29,37 @@ export function PreferencesSettings() {
   const [level,      setLevel]      = useState('')
   const [jobType,    setJobType]    = useState('')
   const [salaryMin,  setSalaryMin]  = useState('')
+  const [blockedCompaniesText, setBlockedCompaniesText] = useState('')
+
+  const parseBlockedCompanies = (value: string) => {
+    const seen = new Set<string>()
+    return value
+      .split(/[\n,]+/)
+      .map((company) => company.trim().replace(/\s+/g, ' '))
+      .filter((company) => {
+        const key = company.toLowerCase()
+        if (!company || seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+  }
 
   useEffect(() => {
     if (!user) return
     setLevel(user.level_preference ?? '')
     setJobType(user.job_type_preference ?? '')
     setSalaryMin(user.salary_expectation_min != null ? String(user.salary_expectation_min) : '')
+    setBlockedCompaniesText((user.blocked_companies ?? []).join('\n'))
   }, [user])
+
+  const blockedCompanies = parseBlockedCompanies(blockedCompaniesText)
+  const currentBlockedCompanies = user?.blocked_companies ?? []
 
   const isDirty =
     level   !== (user?.level_preference    ?? '') ||
     jobType !== (user?.job_type_preference ?? '') ||
-    (salaryMin === '' ? null : Number(salaryMin)) !== (user?.salary_expectation_min ?? null)
+    (salaryMin === '' ? null : Number(salaryMin)) !== (user?.salary_expectation_min ?? null) ||
+    JSON.stringify(blockedCompanies) !== JSON.stringify(currentBlockedCompanies)
 
   const save = useMutation({
     mutationFn: () =>
@@ -48,6 +67,7 @@ export function PreferencesSettings() {
         level_preference:    level    || null,
         job_type_preference: jobType  || null,
         salary_expectation_min: salaryMin ? Number(salaryMin) : null,
+        blocked_companies: blockedCompanies,
       }).then((r) => r.data),
     onSuccess: (updated) => {
       setUser(updated)
@@ -98,6 +118,22 @@ export function PreferencesSettings() {
           className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-sm outline-none focus:ring-2 focus:ring-primary-500"
         />
         <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">Deixe em branco para não filtrar por salário</p>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
+          Empresas que você não quer ver
+        </label>
+        <textarea
+          value={blockedCompaniesText}
+          onChange={(e) => setBlockedCompaniesText(e.target.value)}
+          placeholder="Ex: Empresa A&#10;Empresa B"
+          rows={4}
+          className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-sm outline-none focus:ring-2 focus:ring-primary-500 resize-y"
+        />
+        <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+          Separe por linha ou vírgula. Vagas dessas empresas não aparecem na busca.
+        </p>
       </div>
 
       <button
