@@ -12,7 +12,9 @@ Estratégia anti-ban:
 import logging
 import json
 import random
+import re
 import time
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -20,9 +22,16 @@ from urllib.request import Request, urlopen
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 from sqlalchemy.orm import Session
 
-from app.models.job import JobPlatform
+from app.models.job import JobLevel, JobPlatform
 from app.services.collectors.html_utils import format_gupy_description
-from app.services.job_service import close_sync_log, ensure_platform, open_sync_log, save_job
+from app.services.job_service import (
+    close_sync_log,
+    compute_sync_cutoff,
+    ensure_platform,
+    get_platform_sync_anchor,
+    open_sync_log,
+    save_job,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +142,17 @@ def _should_keep_location(job: dict, city: str) -> bool:
     return city.lower() in loc or any(kw in loc for kw in _REMOTE_KEYWORDS)
 
 
+def _parse_level(text: str) -> JobLevel | None:
+    normalized = unicodedata.normalize("NFKD", text.lower()).encode("ascii", "ignore").decode("ascii")
+    if re.search(r"(?<![a-z0-9])(?:junior|jr|trainee)(?![a-z0-9])", normalized):
+        return JobLevel.JUNIOR
+    if re.search(r"(?<![a-z0-9])(?:pleno|pl)(?![a-z0-9])", normalized):
+        return JobLevel.PLENO
+    if re.search(r"(?<![a-z0-9])(?:senior|sr)(?![a-z0-9])", normalized):
+        return JobLevel.SENIOR
+    return None
+
+
 def _extract_company(raw: dict, job_url: str) -> str:
     """Tenta múltiplos campos e extrai do subdomínio como fallback."""
     # Campos que o portal pode retornar dependendo da versão da API
@@ -216,6 +236,7 @@ def _parse_job(raw: dict) -> dict | None:
         "company":      company,
         "location":     location,
         "description":  format_gupy_description(raw.get("description")),
+        "level":        _parse_level(title),
         "platform":     JobPlatform.GUPY,
         "url":          job_url,
         "published_at": published_at,
@@ -305,9 +326,11 @@ def _fetch_keyword_via_api(
     keyword: str,
     state: str | None,
     expanded: frozenset[str],
-) -> list[dict]:
+    cutoff: datetime,
+    anchor_id: str | None,
+) -> tuple[list[dict], bool]:
     collected: dict[str, dict] = {}
-    cutoff = datetime.now(timezone.utc) - _MAX_AGE
+    api_loaded = False
 
     for page_n in range(MAX_SCROLL_PAGES + 1):
         offset = page_n * _API_PAGE_LIMIT
@@ -331,11 +354,20 @@ def _fetch_keyword_via_api(
         batch = payload.get("data") if isinstance(payload, dict) else None
         if not batch:
             break
+        api_loaded = True
 
         added = 0
+        anchor_found = False
+        cutoff_reached = False
         for raw in batch:
             job = _parse_job(raw)
-            if not job or not _job_passes_filters(job, state, expanded, cutoff):
+            if not job:
+                continue
+            if anchor_id is not None and job["external_id"] == anchor_id:
+                anchor_found = True
+            if job["published_at"] is not None and job["published_at"] < cutoff:
+                cutoff_reached = True
+            if not _job_passes_filters(job, state, expanded, cutoff):
                 continue
             if job["external_id"] not in collected:
                 collected[job["external_id"]] = job
@@ -345,10 +377,16 @@ def _fetch_keyword_via_api(
 
         pagination = payload.get("pagination") or {}
         total = pagination.get("total")
+        if anchor_found:
+            logger.info("Gupy API: anchor %s encontrado na pagina %d — encerrando paginação", anchor_id, page_n + 1)
+            break
+        if cutoff_reached:
+            logger.info("Gupy API: cutoff %s atingido na pagina %d — encerrando paginação", cutoff.date(), page_n + 1)
+            break
         if added == 0 or total is None or offset + _API_PAGE_LIMIT >= total:
             break
 
-    return list(collected.values())
+    return list(collected.values()), api_loaded
 
 
 def _fetch_keyword_in_browser(
@@ -356,17 +394,18 @@ def _fetch_keyword_in_browser(
     keyword: str,
     state: str | None,
     expanded: frozenset[str],
+    cutoff: datetime,
+    anchor_id: str | None,
 ) -> list[dict]:
     """
     Usa um browser aberto para interceptar a API de vagas,
     paginar via scroll e retornar vagas que batem no keyword/localizacao.
     """
-    api_jobs = _fetch_keyword_via_api(keyword, state, expanded)
-    if api_jobs:
+    api_jobs, api_loaded = _fetch_keyword_via_api(keyword, state, expanded, cutoff, anchor_id)
+    if api_loaded:
         return api_jobs
 
     collected: dict[str, dict] = {}
-    cutoff = datetime.now(timezone.utc) - _MAX_AGE
 
     viewport = random.choice(_VIEWPORTS)
     ua = random.choice(_USER_AGENTS)
@@ -401,21 +440,27 @@ def _fetch_keyword_in_browser(
 
     page.on("response", _on_response)
 
-    def _drain_pending() -> int:
-        """Processa buffer e retorna quantidade de novas vagas adicionadas."""
+    def _drain_pending() -> tuple[int, bool, bool]:
+        """Processa buffer e retorna (novas vagas adicionadas, anchor encontrado, cutoff atingido)."""
         added = 0
+        anchor_found = False
+        cutoff_reached = False
         for batch in _pending:
             for raw in batch:
                 job = _parse_job(raw)
                 if not job:
                     continue
+                if anchor_id is not None and job["external_id"] == anchor_id:
+                    anchor_found = True
+                if job["published_at"] is not None and job["published_at"] < cutoff:
+                    cutoff_reached = True
                 if not _job_passes_filters(job, state, expanded, cutoff):
                     continue
                 if job["external_id"] not in collected:
                     collected[job["external_id"]] = job
                     added += 1
         _pending.clear()
-        return added
+        return added, anchor_found, cutoff_reached
 
     try:
         # ── Carga inicial ────────────────────────────────────────────────────
@@ -428,8 +473,15 @@ def _fetch_keyword_in_browser(
         except PWTimeout:
             logger.warning("Gupy: API nao respondeu na carga inicial")
 
-        initial = _drain_pending()
+        initial, anchor_found, cutoff_reached = _drain_pending()
         logger.info("Gupy: %d vagas na carga inicial", initial)
+
+        if anchor_found:
+            logger.info("Gupy: anchor %s encontrado na carga inicial — encerrando paginação", anchor_id)
+            return list(collected.values())
+        if cutoff_reached:
+            logger.info("Gupy: cutoff %s atingido na carga inicial — encerrando paginação", cutoff.date())
+            return list(collected.values())
 
         if not initial:
             # Página pode ter retornado erro ou CAPTCHA — abandona
@@ -452,9 +504,15 @@ def _fetch_keyword_in_browser(
             except PWTimeout:
                 pass
 
-            added = _drain_pending()
+            added, anchor_found, cutoff_reached = _drain_pending()
             logger.info("Gupy: scroll %d → +%d vagas", scroll_n + 1, added)
 
+            if anchor_found:
+                logger.info("Gupy: anchor %s encontrado no scroll %d — encerrando paginação", anchor_id, scroll_n + 1)
+                break
+            if cutoff_reached:
+                logger.info("Gupy: cutoff %s atingido no scroll %d — encerrando paginação", cutoff.date(), scroll_n + 1)
+                break
             if added == 0:
                 # Sem novas vagas = chegamos no fim
                 break
@@ -491,7 +549,9 @@ def collect_batch(
             try:
                 for idx, keyword in enumerate(keywords):
                     expanded = _expand_keyword(keyword)
-                    for job in _fetch_keyword_in_browser(browser, keyword, state, expanded):
+                    latest_date, anchor_id = get_platform_sync_anchor(db, JobPlatform.GUPY, keyword)
+                    cutoff = compute_sync_cutoff(latest_date)
+                    for job in _fetch_keyword_in_browser(browser, keyword, state, expanded, cutoff, anchor_id):
                         existing = all_jobs.get(job["external_id"])
                         if existing:
                             if job.get("remote"):

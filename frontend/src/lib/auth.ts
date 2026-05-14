@@ -1,6 +1,7 @@
 import type { AuthUser } from '@/types'
 
 const TOKEN_KEY = 'jobhub_token'
+const REFRESH_TOKEN_KEY = 'jobhub_refresh_token'
 const USER_KEY  = 'jobhub_user'
 
 // ── cookie helpers (usadas pelo middleware) ─────────────────────────────────
@@ -26,8 +27,23 @@ export function setToken(token: string): void {
   setCookie(TOKEN_KEY, token, 7) // espelha no cookie para o middleware
 }
 
+export function getRefreshToken(): string | null {
+  if (typeof window === 'undefined') return null
+  return localStorage.getItem(REFRESH_TOKEN_KEY)
+}
+
+export function setRefreshToken(token: string): void {
+  localStorage.setItem(REFRESH_TOKEN_KEY, token)
+}
+
+export function setAuthTokens(accessToken: string, refreshToken: string): void {
+  setToken(accessToken)
+  setRefreshToken(refreshToken)
+}
+
 export function removeToken(): void {
   localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(REFRESH_TOKEN_KEY)
   deleteCookie(TOKEN_KEY)
 }
 

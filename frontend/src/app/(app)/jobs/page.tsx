@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useEffect, useRef, type KeyboardEvent } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { JobCard, JobCardSkeleton } from '@/components/jobs/JobCard'
 import { JobFilters } from '@/components/jobs/JobFilters'
 import { JobDetail } from '@/components/jobs/JobDetail'
@@ -8,10 +8,17 @@ import { SyncProgressBar } from '@/components/jobs/SyncProgressBar'
 import { useJobs, useSyncJobs, defaultFilters, type JobFilters as Filters, type SortBy } from '@/hooks/useJobs'
 import { useAppliedJobIds, useCreateApplication } from '@/hooks/useApplications'
 import { useViewedJobs } from '@/hooks/useViewedJobs'
+import { useDismissedNewJobs } from '@/hooks/useDismissedNewJobs'
 import { useDesiredRoles } from '@/hooks/useDesiredRoles'
 import { useToast } from '@/store/toast.store'
 import { useAuthStore } from '@/store/auth.store'
 import type { Job } from '@/types'
+
+type JobsTab = 'all' | 'new' | 'applied'
+
+function isNewJob(job: Job): boolean {
+  return Date.now() - new Date(job.created_at).getTime() < 24 * 60 * 60 * 1000
+}
 
 export default function JobsPage() {
   const toast = useToast()
@@ -19,7 +26,9 @@ export default function JobsPage() {
 
   const [filters, setFilters]         = useState<Filters>(defaultFilters)
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
-  const [applyingId, setApplyingId]   = useState<number | null>(null)
+  const [activeTab, setActiveTab] = useState<JobsTab>('all')
+  const [applyingId, setApplyingId] = useState<number | null>(null)
+  const [localAppliedIds, setLocalAppliedIds] = useState<Set<number>>(new Set())
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
   const [syncMenuOpen, setSyncMenuOpen] = useState(false)
   const syncMenuRef = useRef<HTMLDivElement>(null)
@@ -28,7 +37,9 @@ export default function JobsPage() {
   const { isSyncing, progress, message, status, jobsFound, startSync } = useSyncJobs()
   const createApplication = useCreateApplication()
   const appliedJobIds = useAppliedJobIds()
+  const effectiveAppliedJobIds = new Set([...Array.from(appliedJobIds), ...Array.from(localAppliedIds)])
   const { viewed, markViewed } = useViewedJobs()
+  const { dismissed, dismiss } = useDismissedNewJobs()
   const { data: desiredRoles = [] } = useDesiredRoles()
 
   // Toast on sync completion / failure
@@ -45,6 +56,19 @@ export default function JobsPage() {
 
   const jobs = data?.pages.flatMap((p) => p.items) ?? []
   const total = data?.pages[0]?.total ?? 0
+  const newTotal = data?.pages[0]?.new_total ?? 0
+  const appliedJobs = jobs.filter((job) => effectiveAppliedJobIds.has(job.id))
+  const removedNewCount = jobs.filter((job) => isNewJob(job) && (dismissed.has(job.id) || effectiveAppliedJobIds.has(job.id))).length
+  const visibleNewTotal = Math.max(0, newTotal - removedNewCount)
+  const newJobs = jobs.filter((job) => isNewJob(job) && !dismissed.has(job.id) && !effectiveAppliedJobIds.has(job.id))
+  const visibleJobs =
+    activeTab === 'new' ? newJobs :
+    activeTab === 'applied' ? appliedJobs :
+    jobs
+  const visibleTotal =
+    activeTab === 'new' ? visibleNewTotal :
+    activeTab === 'applied' ? appliedJobs.length :
+    total
 
   const handleClearJobs = useCallback(async () => {
     if (!confirm('Deletar todas as vagas do banco?')) return
@@ -57,13 +81,27 @@ export default function JobsPage() {
     }
   }, [toast])
 
-  const handleApply = useCallback(async (job: Job) => {
-    if (applyingId !== null) return
+  const handleExpand = useCallback((job: Job) => {
+    markViewed(job.id)
+    setSelectedJob(job)
+  }, [markViewed])
+
+  const handleView = useCallback((job: Job) => {
+    markViewed(job.id)
+  }, [markViewed])
+
+  const handleDismissNew = useCallback((job: Job) => {
+    dismiss(job.id)
+  }, [dismiss])
+
+  const handleMarkApplied = useCallback(async (job: Job) => {
+    if (applyingId !== null || effectiveAppliedJobIds.has(job.id)) return
     setApplyingId(job.id)
     try {
       await createApplication.mutateAsync(job.id)
+      setLocalAppliedIds((prev) => new Set(prev).add(job.id))
       toast.success('Candidatura registrada!')
-      setSelectedJob(null)
+      if (activeTab !== 'all') setSelectedJob(null)
     } catch (err: any) {
       const status = err?.response?.status
       const detail = err?.response?.data?.detail ?? ''
@@ -75,16 +113,7 @@ export default function JobsPage() {
     } finally {
       setApplyingId(null)
     }
-  }, [applyingId, createApplication, toast])
-
-  const handleExpand = useCallback((job: Job) => {
-    markViewed(job.id)
-    setSelectedJob(job)
-  }, [markViewed])
-
-  const handleView = useCallback((job: Job) => {
-    markViewed(job.id)
-  }, [markViewed])
+  }, [activeTab, applyingId, effectiveAppliedJobIds, createApplication, toast])
 
   const handleFiltersChange = (f: Filters) => {
     setFilters(f)
@@ -131,6 +160,7 @@ export default function JobsPage() {
       >
         <JobFilters
           filters={filters}
+          desiredRoles={desiredRoles}
           onChange={handleFiltersChange}
           onClose={() => setMobileFiltersOpen(false)}
         />
@@ -174,7 +204,9 @@ export default function JobsPage() {
             <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Vagas</h1>
             {!isLoading && (
               <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-                {total === 0 ? 'Nenhuma vaga encontrada' : `${total.toLocaleString('pt-BR')} vagas encontradas`}
+                {visibleTotal === 0
+                  ? 'Nenhuma vaga encontrada'
+                  : `${visibleTotal.toLocaleString('pt-BR')} vagas ${activeTab === 'new' ? 'novas' : 'encontradas'}`}
               </p>
             )}
           </div>
@@ -270,6 +302,48 @@ export default function JobsPage() {
           </div>
         </div>
 
+        {/* Tabs */}
+        <div className="mb-5 border-b border-gray-200 dark:border-gray-700">
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setActiveTab('all')}
+              className={`px-4 py-2 text-sm font-semibold border-b-2 transition-colors ${
+                activeTab === 'all'
+                  ? 'border-primary-600 text-primary-700 dark:text-primary-400'
+                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+              }`}
+            >
+              Todas
+            </button>
+            <button
+              onClick={() => setActiveTab('new')}
+              className={`px-4 py-2 text-sm font-semibold border-b-2 transition-colors ${
+                activeTab === 'new'
+                  ? 'border-primary-600 text-primary-700 dark:text-primary-400'
+                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+              }`}
+            >
+              Novas
+              <span className="ml-2 rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-600 dark:text-gray-300">
+                {visibleNewTotal.toLocaleString('pt-BR')}
+              </span>
+            </button>
+            <button
+              onClick={() => setActiveTab('applied')}
+              className={`px-4 py-2 text-sm font-semibold border-b-2 transition-colors ${
+                activeTab === 'applied'
+                  ? 'border-primary-600 text-primary-700 dark:text-primary-400'
+                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+              }`}
+            >
+              Candidatadas
+              <span className="ml-2 rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-600 dark:text-gray-300">
+                {appliedJobs.length.toLocaleString('pt-BR')}
+              </span>
+            </button>
+          </div>
+        </div>
+
         {/* Grid */}
         {isLoading ? (
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
@@ -282,7 +356,7 @@ export default function JobsPage() {
               {(error as any)?.response?.status} — {(error as any)?.response?.data?.detail ?? (error as any)?.message}
             </p>
           </div>
-        ) : jobs.length === 0 ? (
+        ) : visibleJobs.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-center">
             <svg className="w-16 h-16 text-gray-200 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
@@ -290,23 +364,40 @@ export default function JobsPage() {
             </svg>
             <p className="text-gray-500 dark:text-gray-400 font-medium">Nenhuma vaga encontrada</p>
             <p className="text-gray-400 dark:text-gray-500 text-sm mt-1">
-              {desiredRoles.length === 0
+              {activeTab === 'new'
+                ? 'Nenhuma vaga nova nesta lista'
+                : activeTab === 'applied'
+                ? 'As vagas que você marcar como candidatado aparecerão aqui'
+                : desiredRoles.length === 0
                 ? 'Configure seus cargos em Configurações e clique em Atualizar vagas'
                 : 'Clique em "Atualizar vagas" para buscar novas oportunidades'}
             </p>
+            {activeTab === 'new' && hasNextPage && (
+              <button
+                onClick={() => fetchNextPage()}
+                disabled={isFetchingNextPage}
+                className="mt-5 px-6 py-2.5 border border-gray-200 dark:border-gray-600 rounded-xl text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors"
+              >
+                {isFetchingNextPage ? 'Carregando…' : 'Carregar mais vagas'}
+              </button>
+            )}
           </div>
         ) : (
           <>
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-              {jobs.map((job) => (
+              {visibleJobs.map((job) => (
                 <JobCard
                   key={job.id}
                   job={job}
-                  onApply={handleApply}
                   onExpand={handleExpand}
                   onView={handleView}
+                  onMarkApplied={handleMarkApplied}
+                  onDismissNew={handleDismissNew}
+                  showDismissNew={activeTab === 'new'}
+                  primaryAction={activeTab === 'new' ? 'mark_applied' : 'view_site'}
+                  primaryActionLabel={activeTab === 'all' || activeTab === 'applied' ? 'Ver vaga no site' : 'Candidatar'}
+                  applied={effectiveAppliedJobIds.has(job.id)}
                   applying={applyingId === job.id}
-                  applied={appliedJobIds.has(job.id)}
                   viewed={viewed.has(job.id)}
                 />
               ))}
@@ -349,7 +440,8 @@ export default function JobsPage() {
       <JobDetail
         job={selectedJob}
         onClose={() => setSelectedJob(null)}
-        onApply={handleApply}
+        onMarkApplied={handleMarkApplied}
+        applied={selectedJob ? effectiveAppliedJobIds.has(selectedJob.id) : false}
         applying={applyingId === selectedJob?.id}
       />
     </div>

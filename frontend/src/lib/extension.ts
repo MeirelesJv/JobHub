@@ -25,9 +25,9 @@ export async function isExtensionInstalled(): Promise<boolean> {
   });
 }
 
-export function sendTokenToExtension(token: string, userId: number, userEmail: string): void {
+export function sendTokenToExtension(token: string, userId: number, userEmail: string, refreshToken?: string): void {
   window.postMessage(
-    { type: 'JOBHUB_LOGIN', token, user_id: userId, user_email: userEmail },
+    { type: 'JOBHUB_LOGIN', token, refresh_token: refreshToken, user_id: userId, user_email: userEmail },
     '*',
   );
 }
@@ -37,14 +37,12 @@ export function sendLogoutToExtension(): void {
 }
 
 /**
- * Dispara o Easy Apply turbo via extensão.
- * A extensão abre a vaga no LinkedIn em background, preenche e submete.
- * O resultado chega via notificação Chrome (async fire-and-forget).
+ * Pede para a extensão rastrear a confirmação do Easy Apply no LinkedIn.
+ * A candidatura só é registrada quando a extensão detecta a tela de sucesso.
  */
-export function applyLinkedInEasyApply(params: {
-  jobUrl: string
+export function trackLinkedInApply(params: {
   linkedinJobId: string
   internalJobId: number
 }): void {
-  window.postMessage({ type: 'JOBHUB_APPLY', ...params }, '*');
+  window.postMessage({ type: 'JOBHUB_TRACK_APPLY', ...params }, '*');
 }

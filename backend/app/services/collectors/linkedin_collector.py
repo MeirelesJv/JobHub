@@ -13,9 +13,16 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from sqlalchemy.orm import Session
 
-from app.models.job import JobPlatform
+from app.models.job import JobLevel, JobPlatform
 from app.services.collectors.html_utils import html_to_text
-from app.services.job_service import close_sync_log, ensure_platform, open_sync_log, save_job
+from app.services.job_service import (
+    close_sync_log,
+    compute_sync_cutoff,
+    ensure_platform,
+    get_platform_sync_anchor,
+    open_sync_log,
+    save_job,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +112,24 @@ def _expand_keyword(keyword: str) -> frozenset[str]:
     return frozenset(expanded)
 
 
+def _search_keyword_variants(keyword: str) -> tuple[str, ...]:
+    variants = [keyword]
+    singular_words = []
+    changed = False
+    for word in keyword.split():
+        normalized = _normalize(word)
+        if normalized.endswith("s") and len(normalized) > 4 and normalized not in {"dados"}:
+            singular_words.append(word[:-1])
+            changed = True
+        else:
+            singular_words.append(word)
+
+    singular = " ".join(singular_words)
+    if changed and singular.lower() != keyword.lower():
+        variants.append(singular)
+    return tuple(dict.fromkeys(variants))
+
+
 def _term_variants(term: str) -> set[str]:
     variants = {term}
     if term in {"dado", "dados"}:
@@ -168,6 +193,17 @@ def _is_remote(title: str, location: str | None) -> bool:
     return any(kw in combined for kw in _REMOTE_KEYWORDS)
 
 
+def _parse_level(text: str) -> JobLevel | None:
+    normalized = _normalize(text)
+    if re.search(r"(?<![a-z0-9])(?:junior|jr|trainee)(?![a-z0-9])", normalized):
+        return JobLevel.JUNIOR
+    if re.search(r"(?<![a-z0-9])(?:pleno|pl)(?![a-z0-9])", normalized):
+        return JobLevel.PLENO
+    if re.search(r"(?<![a-z0-9])(?:senior|sr)(?![a-z0-9])", normalized):
+        return JobLevel.SENIOR
+    return None
+
+
 def _should_keep_location(job: dict, city: str) -> bool:
     """Mantém vagas na cidade alvo OU remotas."""
     if job.get("remote"):
@@ -210,6 +246,50 @@ def _detect_easy_apply(html: str) -> bool:
     return "apply-button--default" in html and "offsite-apply-icon" not in html
 
 
+def _parse_relative_posted_at(html: str) -> datetime | None:
+    match = re.search(
+        r'class="[^"]*posted-time-ago__text[^"]*"[^>]*>\s*(.*?)\s*</span>',
+        html,
+        re.S,
+    )
+    if not match:
+        return None
+
+    text = _normalize(_strip_html(match.group(1)))
+    now = datetime.now(timezone.utc)
+    if not text:
+        return None
+    if re.search(r"\b(now|agora|just now)\b", text):
+        return now
+
+    match = re.search(r"\b(\d+)\s*(minute|minutes|minuto|minutos|min)\b", text)
+    if match:
+        return now - timedelta(minutes=int(match.group(1)))
+
+    match = re.search(r"\b(\d+)\s*(hour|hours|hora|horas|h)\b", text)
+    if match:
+        return now - timedelta(hours=int(match.group(1)))
+
+    match = re.search(r"\b(\d+)\s*(day|days|dia|dias|d)\b", text)
+    if match:
+        return now - timedelta(days=int(match.group(1)))
+
+    if "yesterday" in text or "ontem" in text:
+        return now - timedelta(days=1)
+    return None
+
+
+def _has_truncated_published_at(job_data: dict) -> bool:
+    published_at = job_data.get("published_at")
+    return (
+        published_at is not None
+        and published_at.hour == 0
+        and published_at.minute == 0
+        and published_at.second == 0
+        and published_at.microsecond == 0
+    )
+
+
 def _get_thread_client() -> httpx.Client:
     client = getattr(_thread_local, "client", None)
     if client is None or client.is_closed:
@@ -222,8 +302,8 @@ def _fetch_detail(
     job_id: str,
     client: httpx.Client | None = None,
     max_retries: int = 3,
-) -> tuple[str | None, bool]:
-    """Returns (description, easy_apply)."""
+) -> tuple[str | None, bool, datetime | None]:
+    """Returns (description, easy_apply, published_at)."""
     url = DETAIL_API.format(job_id=job_id)
     get = client.get if client else httpx.get
     for attempt in range(max_retries):
@@ -238,15 +318,15 @@ def _fetch_detail(
                 time.sleep(wait)
                 continue
             resp.raise_for_status()
-            return _extract_description(resp.text), _detect_easy_apply(resp.text)
+            return _extract_description(resp.text), _detect_easy_apply(resp.text), _parse_relative_posted_at(resp.text)
         except httpx.HTTPStatusError as exc:
             logger.debug("LinkedIn detail HTTP error for %s: %s", job_id, exc)
-            return None, False
+            return None, False, None
         except Exception as exc:
             logger.debug("LinkedIn detail failed for %s: %s", job_id, exc)
-            return None, False
+            return None, False, None
     logger.warning("LinkedIn detail gave up after %d retries for %s", max_retries, job_id)
-    return None, False
+    return None, False, None
 
 
 def _fetch_details_parallel(
@@ -259,9 +339,10 @@ def _fetch_details_parallel(
     to_fetch: list[dict] = []
     for job_data in candidates:
         existing = existing_map.get(job_data["external_id"])
-        if existing and existing.description:
+        if existing and existing.description and not _has_truncated_published_at(job_data):
             job_data["description"] = existing.description
             job_data["easy_apply"] = existing.easy_apply or False
+            job_data["level"] = job_data.get("level") or existing.level or _parse_level(f"{job_data['title']} {existing.description}")
         else:
             to_fetch.append(job_data)
 
@@ -274,12 +355,19 @@ def _fetch_details_parallel(
         worker_idx, job_data = args
         time.sleep(worker_idx % max_workers * 0.4)
         try:
-            description, easy_apply = _fetch_detail(
+            description, easy_apply, published_at = _fetch_detail(
                 job_data["external_id"],
                 client=_get_thread_client(),
             )
+            existing = existing_map.get(job_data["external_id"])
             if description:
                 job_data["description"] = description
+                job_data["level"] = job_data.get("level") or _parse_level(f"{job_data['title']} {description}")
+            elif existing and existing.description:
+                job_data["description"] = existing.description
+                job_data["level"] = job_data.get("level") or existing.level or _parse_level(f"{job_data['title']} {existing.description}")
+            if published_at:
+                job_data["published_at"] = published_at
             job_data["easy_apply"] = easy_apply
             time.sleep(random.uniform(1.0, 1.5))
         except Exception as exc:
@@ -325,6 +413,7 @@ def _parse_cards(html: str) -> list[dict]:
             "platform":     JobPlatform.LINKEDIN,
             "url":          f"https://www.linkedin.com/jobs/view/{job_id}/",
             "published_at": published_at,
+            "level":        _parse_level(title),
             "remote":       _is_remote(title, location),
             "is_active":    True,
         })
@@ -334,13 +423,14 @@ def _parse_cards(html: str) -> list[dict]:
 def _fetch_all_pages(
     base_params: dict,
     expanded: frozenset[str],
+    cutoff: datetime,
+    anchor_id: str | None,
     required_groups: list[set[str]] | None = None,
     on_progress: Callable[[str], None] | None = None,
     label: str = "página",
 ) -> list[dict]:
-    """Busca até MAX_PAGES páginas, parando quando vagas ficarem mais antigas que 30 dias."""
+    """Busca até MAX_PAGES páginas e filtra por cutoff dinâmico."""
     collected: dict[str, dict] = {}
-    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
 
     for page in range(MAX_PAGES):
         if on_progress:
@@ -362,24 +452,19 @@ def _fetch_all_pages(
             logger.info("LinkedIn: nenhum card retornado na página %d", page)
             break
 
-        matched = [c for c in cards if _title_matches(c["title"], expanded, required_groups)]
-        logger.info("LinkedIn: %d/%d vagas passaram no filtro de título", len(matched), len(cards))
+        anchor_found = anchor_id is not None and any(c["external_id"] == anchor_id for c in cards)
+        recent = [
+            c for c in cards
+            if c.get("published_at") is None or c["published_at"] >= cutoff
+        ]
+        matched = [c for c in recent if _title_matches(c["title"], expanded, required_groups)]
+        logger.info("LinkedIn: %d/%d vagas passaram no filtro de título", len(matched), len(recent))
 
         for job in matched:
             collected.setdefault(job["external_id"], job)
 
-        # Resultados são ordenados por data desc (sortBy=DD).
-        # Se a vaga mais recente da página já é mais antiga que 30 dias,
-        # todas as próximas páginas serão ainda mais antigas — para aqui.
-        dated = [c for c in cards if c.get("published_at")]
-        if dated:
-            newest = max(dated, key=lambda j: j["published_at"])
-            if newest["published_at"] < cutoff:
-                logger.info(
-                    "LinkedIn: vaga mais recente da página %d é de %s (>30 dias) — encerrando paginação",
-                    page, newest["published_at"].date(),
-                )
-                break
+        if anchor_found:
+            logger.info("LinkedIn: anchor %s encontrado na página %d", anchor_id, page)
 
         if page < MAX_PAGES - 1:
             time.sleep(random.uniform(1.5, 2.5))
@@ -397,6 +482,8 @@ def collect(
 ) -> tuple[int, int]:
     platform = ensure_platform(db, PLATFORM_NAME, PLATFORM_SLUG)
     log      = open_sync_log(db, platform, user_id)
+    latest_date, anchor_id = get_platform_sync_anchor(db, JobPlatform.LINKEDIN, keyword)
+    cutoff = compute_sync_cutoff(latest_date)
 
     city = None if location.lower() in ("brasil", "brazil", "") else location
     expanded = _expand_keyword(keyword)
@@ -407,37 +494,41 @@ def collect(
     try:
         jobs_by_id: dict[str, dict] = {}
 
-        # Busca 1: vagas na cidade do usuário (ou Brasil)
-        city_location = f"{city}, Brasil" if city else "Brasil"
-        city_params = {
-            "keywords": keyword,
-            "location": city_location,
-            "geoId":    GEO_BRASIL,
-            "sortBy":   "DD",
-            "f_TPR":    "r2592000",
-            "count":    PAGE_SIZE,
-        }
-        for job in _fetch_all_pages(city_params, expanded, required_groups, on_progress=on_progress, label="cidade pg"):
-            jobs_by_id[job["external_id"]] = job
-
-        # Busca 2: vagas remotas no Brasil (apenas quando há cidade específica)
-        if city:
-            time.sleep(1)
-            remote_params = {
-                "keywords": keyword,
-                "location": "Brasil",
+        for search_keyword in _search_keyword_variants(keyword):
+            # Busca 1: vagas na cidade do usuário (ou Brasil)
+            city_location = f"{city}, Brasil" if city else "Brasil"
+            city_params = {
+                "keywords": search_keyword,
+                "location": city_location,
                 "geoId":    GEO_BRASIL,
                 "sortBy":   "DD",
                 "f_TPR":    "r2592000",
-                "f_WT":     "2",  # remote work type
                 "count":    PAGE_SIZE,
             }
-            for job in _fetch_all_pages(remote_params, expanded, required_groups, on_progress=on_progress, label="remoto pg"):
-                job["remote"] = True  # encontrada via filtro f_WT=2 — garantidamente remota
-                if job["external_id"] in jobs_by_id:
-                    jobs_by_id[job["external_id"]]["remote"] = True
-                else:
-                    jobs_by_id[job["external_id"]] = job
+            for job in _fetch_all_pages(city_params, expanded, cutoff, anchor_id, required_groups, on_progress=on_progress, label="cidade pg"):
+                jobs_by_id[job["external_id"]] = job
+
+            # Busca 2: vagas remotas no Brasil (apenas quando há cidade específica)
+            if city:
+                time.sleep(1)
+                remote_params = {
+                    "keywords": search_keyword,
+                    "location": "Brasil",
+                    "geoId":    GEO_BRASIL,
+                    "sortBy":   "DD",
+                    "f_TPR":    "r2592000",
+                    "f_WT":     "2",  # remote work type
+                    "count":    PAGE_SIZE,
+                }
+                for job in _fetch_all_pages(remote_params, expanded, cutoff, anchor_id, required_groups, on_progress=on_progress, label="remoto pg"):
+                    job["remote"] = True  # encontrada via filtro f_WT=2 — garantidamente remota
+                    if job["external_id"] in jobs_by_id:
+                        jobs_by_id[job["external_id"]]["remote"] = True
+                    else:
+                        jobs_by_id[job["external_id"]] = job
+
+            if search_keyword != keyword:
+                time.sleep(1)
 
         # Filtro de localização: mantém cidade alvo + remotas
         # Skip IDs already processed by a previous keyword in the same sync run

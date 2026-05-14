@@ -1,6 +1,7 @@
 """
 Coleta vagas do InfoJobs por HTML publico.
 """
+import json
 import logging
 import re
 import time
@@ -15,7 +16,14 @@ from sqlalchemy.orm import Session
 
 from app.models.job import JobLevel, JobPlatform, JobType
 from app.services.collectors.html_utils import html_to_text
-from app.services.job_service import close_sync_log, ensure_platform, open_sync_log, save_job
+from app.services.job_service import (
+    close_sync_log,
+    compute_sync_cutoff,
+    ensure_platform,
+    get_platform_sync_anchor,
+    open_sync_log,
+    save_job,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +31,8 @@ PLATFORM_NAME = "InfoJobs"
 PLATFORM_SLUG = "infojobs"
 BASE_URL = "https://www.infojobs.com.br"
 PAGE_SIZE = 20
-MAX_PAGES = 2
+MAX_PAGES = 500
+PAGE_DELAY_SECONDS = 0.2
 
 HEADERS = {
     "User-Agent": (
@@ -40,9 +49,12 @@ _JOB_LINK_RE = re.compile(
     r"<a[^>]+href=[\"'](?P<href>[^\"']*vaga-de-[^\"']*?\.aspx[^\"']*)[\"'][^>]*>\s*(?P<title>.*?)\s*</a>",
     re.I | re.S,
 )
+_JSON_LD_RE = re.compile(
+    r"<script[^>]+type=[\"']application/ld\+json[\"'][^>]*>(?P<payload>.*?)</script>",
+    re.I | re.S,
+)
 _TAG_RE = re.compile(r"<[^>]+>")
 _REMOTE_KEYWORDS = frozenset(["home office", "remoto", "remote", "híbrido", "hibrido"])
-_MAX_AGE = timedelta(days=30)
 
 _SYNONYM_GROUPS: list[frozenset[str]] = [
     frozenset(["desenvolvedor", "developer", "dev", "programador", "engineer", "engenheiro"]),
@@ -116,12 +128,12 @@ def _should_keep_location(job: dict, city: str) -> bool:
 
 
 def _parse_level(text: str) -> JobLevel | None:
-    lower = text.lower()
-    if "junior" in lower or "júnior" in lower or "trainee" in lower or " jr" in f" {lower}":
+    normalized = unicodedata.normalize("NFKD", text.lower()).encode("ascii", "ignore").decode("ascii")
+    if re.search(r"(?<![a-z0-9])(?:junior|jr|trainee)(?![a-z0-9])", normalized):
         return JobLevel.JUNIOR
-    if "pleno" in lower or " pl" in f" {lower}":
+    if re.search(r"(?<![a-z0-9])(?:pleno|pl)(?![a-z0-9])", normalized):
         return JobLevel.PLENO
-    if "senior" in lower or "sênior" in lower or " sr" in f" {lower}":
+    if re.search(r"(?<![a-z0-9])(?:senior|sr)(?![a-z0-9])", normalized):
         return JobLevel.SENIOR
     return None
 
@@ -162,6 +174,25 @@ def _parse_date(text: str) -> datetime | None:
         return datetime(year, month, day, tzinfo=timezone.utc)
 
     return None
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+
+    cleaned = value.strip().replace("Z", "+00:00")
+    match = re.match(r"^(.+?)(\.\d{1,})([+-]\d{2}:\d{2})?$", cleaned)
+    if match and len(match.group(2)) > 7:
+        cleaned = f"{match.group(1)}{match.group(2)[:7]}{match.group(3) or ''}"
+
+    try:
+        parsed = datetime.fromisoformat(cleaned)
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _external_id_from_url(url: str) -> str:
@@ -232,6 +263,10 @@ def _parse_cards(html: str) -> list[dict]:
             continue
 
         url = urljoin(BASE_URL, href)
+        external_id = _external_id_from_url(url)
+        if not external_id.isdigit():
+            continue
+
         joined = " ".join(lines)
         published_at = None
         location = None
@@ -277,7 +312,7 @@ def _parse_cards(html: str) -> list[dict]:
         description = "\n".join(description_lines[-4:]).strip() or None
 
         jobs.append({
-            "external_id": _external_id_from_url(url),
+            "external_id": external_id,
             "title": title,
             "company": company,
             "location": location,
@@ -296,23 +331,91 @@ def _parse_cards(html: str) -> list[dict]:
     return jobs
 
 
-def _detail_description(url: str) -> str | None:
+def _find_job_posting(payload) -> dict | None:
+    if isinstance(payload, dict):
+        type_value = payload.get("@type")
+        types = type_value if isinstance(type_value, list) else [type_value]
+        if "JobPosting" in types:
+            return payload
+        for key in ("@graph", "mainEntity", "itemListElement"):
+            found = _find_job_posting(payload.get(key))
+            if found:
+                return found
+    if isinstance(payload, list):
+        for item in payload:
+            found = _find_job_posting(item)
+            if found:
+                return found
+    return None
+
+
+def _address_location(job_posting: dict) -> str | None:
+    location = job_posting.get("jobLocation")
+    if isinstance(location, list):
+        location = location[0] if location else None
+    if not isinstance(location, dict):
+        return None
+
+    address = location.get("address")
+    if not isinstance(address, dict):
+        return None
+
+    city = address.get("addressLocality")
+    state = address.get("addressRegion")
+    parts = [part for part in (city, state) if part]
+    return " - ".join(parts) if parts else None
+
+
+def _detail_fields(url: str) -> dict:
     try:
         resp = httpx.get(url, headers=HEADERS, timeout=10, follow_redirects=True)
         resp.raise_for_status()
     except Exception as exc:
         logger.debug("InfoJobs detail failed for %s: %s", url, exc)
-        return None
+        return {}
+
+    fields: dict = {}
+    for match in _JSON_LD_RE.finditer(resp.text):
+        try:
+            payload = json.loads(unescape(match.group("payload")))
+        except json.JSONDecodeError:
+            continue
+
+        job_posting = _find_job_posting(payload)
+        if not job_posting:
+            continue
+
+        if job_posting.get("title"):
+            fields["title"] = _clean(str(job_posting["title"]))
+
+        organization = job_posting.get("hiringOrganization")
+        if isinstance(organization, dict) and organization.get("name"):
+            fields["company"] = _clean(str(organization["name"]))
+
+        location = _address_location(job_posting)
+        if location:
+            fields["location"] = location
+
+        published_at = _parse_iso_datetime(job_posting.get("datePosted"))
+        if published_at:
+            fields["published_at"] = published_at
+
+        if job_posting.get("description"):
+            fields["description"] = html_to_text(str(job_posting["description"]))[:4000].strip()
+
+        break
 
     text = html_to_text(resp.text)
-    if not text:
-        return None
+    if text and not fields.get("description"):
+        for marker in ("Descrição", "Atividades", "Requisitos", "Sobre a vaga"):
+            idx = text.lower().find(marker.lower())
+            if idx >= 0:
+                fields["description"] = text[idx: idx + 4000].strip()
+                break
+        else:
+            fields["description"] = text[:2500].strip()
 
-    for marker in ("Descrição", "Atividades", "Requisitos", "Sobre a vaga"):
-        idx = text.lower().find(marker.lower())
-        if idx >= 0:
-            return text[idx: idx + 4000].strip()
-    return text[:2500].strip()
+    return fields
 
 
 def _fetch_page(url: str, page: int) -> list[dict]:
@@ -325,9 +428,14 @@ def _fetch_page(url: str, page: int) -> list[dict]:
     return cards
 
 
-def _fetch_all_pages(keyword: str, city: str | None, expanded: frozenset[str]) -> list[dict]:
+def _fetch_all_pages(
+    keyword: str,
+    city: str | None,
+    expanded: frozenset[str],
+    cutoff: datetime,
+    anchor_id: str | None,
+) -> list[dict]:
     collected: dict[str, dict] = {}
-    cutoff = datetime.now(timezone.utc) - _MAX_AGE
     url = _search_url(keyword, city)
 
     for page in range(1, MAX_PAGES + 1):
@@ -340,6 +448,11 @@ def _fetch_all_pages(keyword: str, city: str | None, expanded: frozenset[str]) -
         if not cards:
             break
 
+        anchor_found = anchor_id is not None and any(job["external_id"] == anchor_id for job in cards)
+        cutoff_reached = any(
+            job["published_at"] is not None and job["published_at"] < cutoff
+            for job in cards
+        )
         recent = [
             job for job in cards
             if job["published_at"] is None or job["published_at"] >= cutoff
@@ -350,13 +463,21 @@ def _fetch_all_pages(keyword: str, city: str | None, expanded: frozenset[str]) -
         for job in matched:
             collected.setdefault(job["external_id"], job)
 
-        if len(cards) < PAGE_SIZE or not recent:
+        if not recent:
             break
-        if len(recent) > 0 and len(matched) / len(recent) < 0.5:
+        if cutoff_reached:
+            logger.info("InfoJobs: cutoff %s atingido na página %d — encerrando paginação", cutoff.date(), page)
+            break
+        if anchor_found:
+            logger.info("InfoJobs: anchor %s encontrado na página %d — encerrando paginação", anchor_id, page)
+            break
+        if len(cards) < PAGE_SIZE:
             break
 
         if page < MAX_PAGES:
-            time.sleep(1)
+            time.sleep(PAGE_DELAY_SECONDS)
+    else:
+        logger.info("InfoJobs: limite de segurança de %d páginas atingido para kw=%s city=%s", MAX_PAGES, keyword, city)
 
     return list(collected.values())
 
@@ -365,10 +486,18 @@ def _fetch_details_parallel(candidates: list[dict], max_workers: int = 5) -> Non
     if not candidates:
         return
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        results = executor.map(lambda j: _detail_description(j["url"]), candidates)
-        for job_data, detail in zip(candidates, results):
-            if detail:
-                job_data["description"] = detail
+        results = executor.map(lambda j: _detail_fields(j["url"]), candidates)
+        for job_data, detail_fields in zip(candidates, results):
+            if not detail_fields:
+                continue
+            job_data.update({key: value for key, value in detail_fields.items() if value is not None})
+            job_data["level"] = _parse_level(f"{job_data['title']} {job_data.get('description') or ''}")
+            job_data["job_type"] = _parse_job_type(job_data.get("description") or "")
+            job_data["remote"] = _is_remote(
+                job_data["title"],
+                job_data.get("location"),
+                job_data.get("description"),
+            )
 
 
 def collect(
@@ -381,25 +510,40 @@ def collect(
 
     platform = ensure_platform(db, PLATFORM_NAME, PLATFORM_SLUG)
     log = open_sync_log(db, platform, user_id)
+    latest_date, anchor_id = get_platform_sync_anchor(db, JobPlatform.INFOJOBS, keyword)
+    cutoff = compute_sync_cutoff(latest_date)
     expanded = _expand_keyword(keyword)
 
     jobs_found = 0
     jobs_new = 0
     try:
-        candidates = [
-            job for job in _fetch_all_pages(keyword, city, expanded)
-            if city is None or _should_keep_location(job, city)
-        ]
+        raw_candidates = _fetch_all_pages(keyword, city, expanded, cutoff, anchor_id)
 
-        _fetch_details_parallel(candidates)
+        if city is None:
+            candidates = raw_candidates
+            detail_targets = candidates
+        else:
+            needs_location = [
+                job for job in raw_candidates
+                if not job.get("remote") and not job.get("location")
+            ]
+            _fetch_details_parallel(needs_location)
+
+            candidates = [job for job in raw_candidates if _should_keep_location(job, city)]
+            detailed_ids = {job["external_id"] for job in needs_location}
+            detail_targets = [job for job in candidates if job["external_id"] not in detailed_ids]
+
+        _fetch_details_parallel(detail_targets)
 
         candidate_ids = [job["external_id"] for job in candidates]
-        existing_ids = {
-            row[0]
-            for row in db.query(Job.external_id)
-            .filter(Job.external_id.in_(candidate_ids), Job.platform == JobPlatform.INFOJOBS)
-            .all()
-        }
+        existing_ids = set()
+        if candidate_ids:
+            existing_ids = {
+                row[0]
+                for row in db.query(Job.external_id)
+                .filter(Job.external_id.in_(candidate_ids), Job.platform == JobPlatform.INFOJOBS)
+                .all()
+            }
 
         jobs_found = len(candidates)
         for job_data in candidates:

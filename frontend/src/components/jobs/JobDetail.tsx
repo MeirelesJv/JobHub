@@ -1,15 +1,15 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { formatDistanceToNow, parseISO } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import type { Job } from '@/types'
-import { isExtensionInstalled, applyLinkedInEasyApply } from '@/lib/extension'
 
 interface Props {
   job:      Job | null
   onClose:  () => void
-  onApply:  (job: Job) => void
+  onMarkApplied?: (job: Job) => void
+  applied?: boolean
   applying?: boolean
 }
 
@@ -24,11 +24,7 @@ const PLATFORM_META: Record<string, { label: string; badge: string }> = {
 const LEVEL_LABEL: Record<string, string> = { junior: 'Júnior', pleno: 'Pleno', senior: 'Sênior' }
 const TYPE_LABEL:  Record<string, string>  = { clt: 'CLT', pj: 'PJ', freelance: 'Freelance' }
 
-export function JobDetail({ job, onClose, onApply, applying = false }: Props) {
-  const [extensionAvailable, setExtensionAvailable] = useState(false)
-  const [easyApplying, setEasyApplying]             = useState(false)
-  const [easyApplyDone, setEasyApplyDone]           = useState(false)
-
+export function JobDetail({ job, onClose, onMarkApplied, applied = false, applying = false }: Props) {
   useEffect(() => {
     if (!job) return
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -36,16 +32,14 @@ export function JobDetail({ job, onClose, onApply, applying = false }: Props) {
     return () => document.removeEventListener('keydown', handler)
   }, [job, onClose])
 
-  useEffect(() => {
-    isExtensionInstalled().then(setExtensionAvailable)
-  }, [])
+  function handleViewSite() {
+    if (!job) return
+    window.open(job.url, '_blank', 'noopener,noreferrer')
+  }
 
-  function handleEasyApply() {
-    if (!job || easyApplying || easyApplyDone) return
-    setEasyApplying(true)
-    applyLinkedInEasyApply({ jobUrl: job.url, linkedinJobId: job.external_id, internalJobId: job.id })
-    // Fire-and-forget — result chega via Chrome notification
-    setTimeout(() => { setEasyApplying(false); setEasyApplyDone(true) }, 1500)
+  function handleMarkApplied() {
+    if (!job || applied || applying) return
+    onMarkApplied?.(job)
   }
 
   if (!job) return null
@@ -129,35 +123,23 @@ export function JobDetail({ job, onClose, onApply, applying = false }: Props) {
 
         {/* Footer actions */}
         <div className="flex items-center gap-3 p-6 border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 rounded-b-2xl">
-          {/* Easy Apply via extension — LinkedIn only */}
-          {job.easy_apply && job.platform === 'linkedin' && extensionAvailable ? (
-            <button
-              onClick={handleEasyApply}
-              disabled={easyApplying || easyApplyDone}
-              className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-semibold rounded-xl transition-colors text-sm flex items-center justify-center gap-2"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              {easyApplyDone ? 'Candidatura iniciada ✓' : easyApplying ? 'Iniciando…' : 'Candidatura simplificada'}
-            </button>
-          ) : (
-            <button
-              onClick={() => onApply(job)}
-              disabled={applying}
-              className="flex-1 py-3 bg-primary-600 hover:bg-primary-700 disabled:bg-primary-400 text-white font-semibold rounded-xl transition-colors text-sm"
-            >
-              {applying ? 'Registrando candidatura…' : 'Candidatar'}
-            </button>
-          )}
-          <a
-            href={job.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex-1 py-3 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 font-semibold rounded-xl transition-colors text-sm text-center"
+          <button
+            onClick={handleViewSite}
+            className="flex-1 py-3 bg-primary-600 hover:bg-primary-700 text-white font-semibold rounded-xl transition-colors text-sm"
           >
-            Abrir site original
-          </a>
+            Ver vaga no site
+          </button>
+          <button
+            onClick={handleMarkApplied}
+            disabled={applied || applying}
+            className={`flex-1 py-3 font-semibold rounded-xl transition-colors text-sm ${
+              applied
+                ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-700 cursor-default'
+                : 'border border-primary-200 dark:border-primary-700 text-primary-700 dark:text-primary-300 hover:bg-primary-50 dark:hover:bg-primary-900/20 disabled:opacity-60 disabled:cursor-not-allowed'
+            }`}
+          >
+            {applied ? 'Candidatado' : applying ? 'Adicionando…' : 'Adicionar como candidatado'}
+          </button>
           <button
             onClick={onClose}
             className="py-3 px-4 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 rounded-xl transition-colors text-sm"

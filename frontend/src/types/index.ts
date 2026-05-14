@@ -49,6 +49,7 @@ export interface Job {
 export interface JobListResponse {
   items: Job[]
   total: number
+  new_total: number
   page: number
   page_size: number
 }

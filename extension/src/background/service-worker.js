@@ -3,12 +3,29 @@
  */
 
 const API_BASE = 'http://localhost:8000';
+const DEBUG_APPLY = true;
+
+function debugApply(event, data = {}) {
+  if (!DEBUG_APPLY) return;
+  const payload = {
+    event,
+    at: new Date().toISOString(),
+    ...data,
+  };
+  console.log('[JobHub Apply Debug]', payload);
+  chrome.storage?.local?.set?.({ lastApplyDebug: payload });
+}
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
 
 async function getToken() {
   const { token } = await chrome.storage.local.get('token');
   return token || null;
+}
+
+async function getRefreshToken() {
+  const { refresh_token } = await chrome.storage.local.get('refresh_token');
+  return refresh_token || null;
 }
 
 function jwtExpired(token) {
@@ -22,11 +39,33 @@ function jwtExpired(token) {
 
 async function isAuthenticated() {
   const token = await getToken();
-  return !!token && !jwtExpired(token);
+  if (token && !jwtExpired(token)) return true;
+  return !!(await refreshAccessToken());
+}
+
+async function refreshAccessToken() {
+  const refreshToken = await getRefreshToken();
+  if (!refreshToken || jwtExpired(refreshToken)) return null;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    await chrome.storage.local.set({ token: data.access_token });
+    return data.access_token;
+  } catch (err) {
+    console.error('[JobHub] refreshAccessToken failed:', err.message);
+    return null;
+  }
 }
 
 async function authHeaders() {
-  const token = await getToken();
+  let token = await getToken();
+  if (!token || jwtExpired(token)) token = await refreshAccessToken();
   return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 }
 
@@ -76,69 +115,84 @@ async function syncApplicationStatus() {
   }
 }
 
-// ─── Easy Apply (Turbo mode) ──────────────────────────────────────────────────
+// ─── Easy Apply detection ─────────────────────────────────────────────────────
 
-async function startLinkedInEasyApply(msg) {
+async function handleTrackApply(msg) {
   if (!(await isAuthenticated())) return { success: false, error: 'not_authenticated' };
+  if (!msg.internalJobId || !msg.linkedinJobId) return { success: false, error: 'missing_job_id' };
+  debugApply('track:received', {
+    internalJobId: msg.internalJobId,
+    linkedinJobId: msg.linkedinJobId,
+  });
 
-  // Fetch user profile for form filling
-  let profile = {};
-  try {
-    const res = await fetch(`${API_BASE}/api/users/profile`, { headers: await authHeaders() });
-    if (res.ok) profile = await res.json();
-  } catch { /* use empty profile, content script will fill what it can */ }
-
-  // Store pending apply — content script picks it up when LinkedIn job page loads
   await chrome.storage.local.set({
-    pendingApply: {
-      jobUrl:         msg.jobUrl,
-      linkedinJobId:  msg.linkedinJobId,
-      internalJobId:  msg.internalJobId,
-      profile: {
-        full_name: profile.full_name || '',
-        email:     profile.email     || '',
-        phone:     profile.phone     || '',
-      },
+    pendingTrack: {
+      linkedinJobId: msg.linkedinJobId,
+      internalJobId: msg.internalJobId,
+      startedAt:     Date.now(),
     },
   });
 
-  // Open LinkedIn job page in background tab
-  chrome.tabs.create({ url: msg.jobUrl, active: false });
-  console.log('[JobHub] Easy Apply initiated for job', msg.linkedinJobId);
-  return { success: true, status: 'initiated' };
+  console.log('[JobHub] Easy Apply tracking armed for job', msg.linkedinJobId);
+  debugApply('track:stored', {
+    internalJobId: msg.internalJobId,
+    linkedinJobId: msg.linkedinJobId,
+  });
+  return { success: true, status: 'tracking' };
 }
 
-async function handleApplyComplete(msg, sender) {
-  // Clear pending
-  await chrome.storage.local.remove('pendingApply');
+async function handleApplyDetected(msg) {
+  debugApply('detected:received', msg);
+  await chrome.storage.local.remove('pendingTrack');
 
-  if (msg.success && msg.internalJobId) {
+  if (msg.internalJobId) {
     try {
-      await fetch(`${API_BASE}/api/applications`, {
+      const res = await fetch(`${API_BASE}/api/applications`, {
         method: 'POST',
         headers: await authHeaders(),
-        body: JSON.stringify({ job_id: msg.internalJobId, mode: 'turbo' }),
+        body: JSON.stringify({ job_id: msg.internalJobId, mode: 'manual' }),
       });
+      if (!res.ok) {
+        let detail = '';
+        try {
+          detail = (await res.json())?.detail || '';
+        } catch { /* ignore non-json responses */ }
+        if (res.status === 400 && detail.toLowerCase().includes('já')) {
+          chrome.notifications.create(`apply-existing-${Date.now()}`, {
+            type: 'basic', iconUrl: 'public/icons/icon128.png',
+            title: 'JobHub — Candidatura já registrada',
+            message: 'Essa candidatura já estava no JobHub.',
+          });
+          return { success: true, status: 'already_registered' };
+        }
+        throw new Error(detail || `HTTP ${res.status}`);
+      }
+      debugApply('backend:application-created', { internalJobId: msg.internalJobId });
     } catch (err) {
       console.error('[JobHub] Failed to register application:', err.message);
+      debugApply('backend:application-error', { internalJobId: msg.internalJobId, error: err.message });
+      chrome.notifications.create(`apply-fail-${Date.now()}`, {
+        type: 'basic', iconUrl: 'public/icons/icon128.png',
+        title: 'JobHub — Candidatura detectada',
+        message: 'A candidatura foi detectada, mas não foi possível registrar no JobHub.',
+      });
+      return { success: false, error: err.message };
     }
+
     chrome.notifications.create(`apply-ok-${Date.now()}`, {
       type: 'basic', iconUrl: 'public/icons/icon128.png',
-      title: 'JobHub — Candidatura enviada!',
-      message: 'Sua candidatura LinkedIn foi registrada com sucesso.',
+      title: 'JobHub — Candidatura registrada',
+      message: 'Sua candidatura LinkedIn foi registrada no JobHub.',
     });
   } else {
     chrome.notifications.create(`apply-fail-${Date.now()}`, {
       type: 'basic', iconUrl: 'public/icons/icon128.png',
-      title: 'JobHub — Candidatura não concluída',
-      message: msg.error || 'Não foi possível completar o formulário automaticamente.',
+      title: 'JobHub — Candidatura detectada',
+      message: 'Não foi possível identificar a vaga interna para registrar.',
     });
+    return { success: false, error: 'missing_internal_job_id' };
   }
 
-  // Close the LinkedIn background tab
-  if (sender?.tab?.id) {
-    chrome.tabs.remove(sender.tab.id);
-  }
   return { success: true };
 }
 
@@ -187,7 +241,12 @@ async function handleMessage(msg, sender) {
       return { success: true, lastSync: lastSync || null };
     }
     case 'LOGIN': {
-      await chrome.storage.local.set({ token: msg.token, user_id: msg.user_id, user_email: msg.user_email });
+      await chrome.storage.local.set({
+        token:         msg.token,
+        refresh_token: msg.refresh_token || null,
+        user_id:       msg.user_id,
+        user_email:    msg.user_email,
+      });
       await chrome.alarms.clearAll();
       chrome.alarms.create('sync-jobs',   { periodInMinutes: 120  });
       chrome.alarms.create('sync-status', { periodInMinutes: 1440 });
@@ -199,11 +258,11 @@ async function handleMessage(msg, sender) {
       await chrome.alarms.clearAll();
       return { success: true };
     }
-    case 'APPLY_LINKEDIN': {
-      return startLinkedInEasyApply(msg);
+    case 'TRACK_APPLY': {
+      return handleTrackApply(msg);
     }
-    case 'APPLY_COMPLETE': {
-      return handleApplyComplete(msg, sender);
+    case 'APPLY_DETECTED': {
+      return handleApplyDetected(msg);
     }
     case 'INGEST_JOBS': {
       ingestJobs(msg.jobs);

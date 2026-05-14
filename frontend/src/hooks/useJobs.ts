@@ -9,6 +9,7 @@ export type SortBy = 'date_desc' | 'date_asc' | 'title_asc' | 'platform_asc'
 
 export interface JobFilters {
   q:         string
+  desired_roles: string[]
   platforms: JobPlatform[]
   levels:    JobLevel[]
   job_types: JobType[]
@@ -18,6 +19,7 @@ export interface JobFilters {
 
 export const defaultFilters: JobFilters = {
   q:         '',
+  desired_roles: [],
   platforms: [],
   levels:    [],
   job_types: [],
@@ -28,6 +30,7 @@ export const defaultFilters: JobFilters = {
 function buildParams(filters: JobFilters, page: number): URLSearchParams {
   const p = new URLSearchParams({ page: String(page), page_size: String(PAGE_SIZE) })
   if (filters.q)                      p.set('query', filters.q)
+  filters.desired_roles.forEach((role) => p.append('desired_role', role))
   if (filters.platforms.length === 1) p.set('platform', filters.platforms[0])
   if (filters.levels.length === 1)    p.set('level', filters.levels[0])
   if (filters.job_types.length === 1) p.set('job_type', filters.job_types[0])
@@ -66,12 +69,58 @@ interface SyncStatus {
 }
 
 const SYNC_TIMEOUT_MS = 20 * 60 * 1000  // 20 minutes
+const SYNC_STORAGE_KEY = 'jobhub:jobs-sync'
+
+interface PersistedSync {
+  taskId: string
+  startedAt: number
+}
+
+function readPersistedSync(): PersistedSync | null {
+  if (typeof window === 'undefined') return null
+
+  try {
+    const raw = window.localStorage.getItem(SYNC_STORAGE_KEY)
+    if (!raw) return null
+
+    const parsed = JSON.parse(raw) as Partial<PersistedSync>
+    if (!parsed.taskId || !parsed.startedAt) return null
+    if (Date.now() - parsed.startedAt > SYNC_TIMEOUT_MS) {
+      window.localStorage.removeItem(SYNC_STORAGE_KEY)
+      return null
+    }
+
+    return { taskId: parsed.taskId, startedAt: parsed.startedAt }
+  } catch {
+    window.localStorage.removeItem(SYNC_STORAGE_KEY)
+    return null
+  }
+}
+
+function persistSync(sync: PersistedSync) {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(SYNC_STORAGE_KEY, JSON.stringify(sync))
+}
+
+function clearPersistedSync() {
+  if (typeof window === 'undefined') return
+  window.localStorage.removeItem(SYNC_STORAGE_KEY)
+}
 
 export function useSyncJobs() {
   const qc = useQueryClient()
   const [taskId,   setTaskId]   = useState<string | null>(null)
   const [syncing,  setSyncing]  = useState(false)
   const [startedAt, setStartedAt] = useState<number | null>(null)
+
+  useEffect(() => {
+    const persisted = readPersistedSync()
+    if (!persisted) return
+
+    setTaskId(persisted.taskId)
+    setStartedAt(persisted.startedAt)
+    setSyncing(true)
+  }, [])
 
   const statusQuery = useQuery<SyncStatus>({
     queryKey: ['syncStatus', taskId],
@@ -99,6 +148,7 @@ export function useSyncJobs() {
     }
     // Keep progress visible briefly before hiding
     const t = setTimeout(() => {
+      clearPersistedSync()
       setSyncing(false)
       setTaskId(null)
       setStartedAt(null)
@@ -108,13 +158,16 @@ export function useSyncJobs() {
 
   const startSync = useCallback(async (platform?: string) => {
     if (syncing) return
+    const nextStartedAt = Date.now()
     setSyncing(true)
-    setStartedAt(Date.now())
+    setStartedAt(nextStartedAt)
     try {
       const body = platform ? { platforms: [platform] } : {}
       const { data } = await api.post<{ task_id: string }>('/api/jobs/sync', body)
       setTaskId(data.task_id)
+      persistSync({ taskId: data.task_id, startedAt: nextStartedAt })
     } catch {
+      clearPersistedSync()
       setSyncing(false)
       setStartedAt(null)
     }

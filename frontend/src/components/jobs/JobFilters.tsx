@@ -2,9 +2,11 @@
 
 import type { JobPlatform, JobType, JobLevel } from '@/types'
 import type { JobFilters } from '@/hooks/useJobs'
+import type { DesiredRole } from '@/hooks/useDesiredRoles'
 
 interface Props {
   filters:   JobFilters
+  desiredRoles?: DesiredRole[]
   onChange:  (f: JobFilters) => void
   onClose?:  () => void
 }
@@ -34,10 +36,10 @@ function toggle<T>(arr: T[], val: T): T[] {
 }
 
 function hasActiveFilters(f: JobFilters) {
-  return f.q || f.platforms.length || f.levels.length || f.job_types.length || f.remote !== null
+  return f.q || f.desired_roles.length || f.platforms.length || f.levels.length || f.job_types.length || f.remote !== null
 }
 
-export function JobFilters({ filters, onChange, onClose }: Props) {
+export function JobFilters({ filters, desiredRoles = [], onChange, onClose }: Props) {
   const set = (partial: Partial<JobFilters>) => onChange({ ...filters, ...partial })
 
   return (
@@ -70,6 +72,20 @@ export function JobFilters({ filters, onChange, onClose }: Props) {
           />
         </div>
       </div>
+
+      {/* Cargo */}
+      {desiredRoles.length > 0 && (
+        <FilterGroup label="Cargo">
+          {desiredRoles.map((role) => (
+            <Checkbox
+              key={role.id}
+              label={role.role_name}
+              checked={filters.desired_roles.includes(role.role_name)}
+              onChange={() => set({ desired_roles: toggle(filters.desired_roles, role.role_name) })}
+            />
+          ))}
+        </FilterGroup>
+      )}
 
       {/* Plataforma */}
       <FilterGroup label="Plataforma">
@@ -129,7 +145,7 @@ export function JobFilters({ filters, onChange, onClose }: Props) {
       {/* Clear */}
       {hasActiveFilters(filters) && (
         <button
-          onClick={() => onChange({ q: '', platforms: [], levels: [], job_types: [], remote: null, sort_by: 'date_desc' })}
+          onClick={() => onChange({ q: '', desired_roles: [], platforms: [], levels: [], job_types: [], remote: null, sort_by: 'date_desc' })}
           className="mt-auto pt-4 text-sm text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 font-medium flex items-center gap-1.5"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">

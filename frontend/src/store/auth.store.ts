@@ -1,13 +1,13 @@
 import { create } from 'zustand'
 import type { AuthUser } from '@/types'
-import { clearAuth, setToken, setUser } from '@/lib/auth'
+import { clearAuth, setAuthTokens, setToken, setUser } from '@/lib/auth'
 import { sendTokenToExtension, sendLogoutToExtension } from '@/lib/extension'
 
 interface AuthState {
   user:            AuthUser | null
   token:           string | null
   isAuthenticated: boolean
-  login:   (user: AuthUser, token: string) => void
+  login:   (user: AuthUser, token: string, refreshToken?: string) => void
   logout:  () => void
   setUser: (user: AuthUser) => void
 }
@@ -17,11 +17,12 @@ export const useAuthStore = create<AuthState>((set) => ({
   token:           null,
   isAuthenticated: false,
 
-  login: (user, token) => {
-    setToken(token)
+  login: (user, token, refreshToken) => {
+    if (refreshToken) setAuthTokens(token, refreshToken)
+    else setToken(token)
     setUser(user)
     set({ user, token, isAuthenticated: true })
-    sendTokenToExtension(token, user.id, user.email)
+    sendTokenToExtension(token, user.id, user.email, refreshToken)
   },
 
   logout: () => {

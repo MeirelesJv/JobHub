@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import api from '@/lib/api'
-import { setToken } from '@/lib/auth'
+import { setAuthTokens } from '@/lib/auth'
 import { useAuthStore } from '@/store/auth.store'
 import type { AuthUser, TokenResponse } from '@/types'
 
@@ -50,12 +50,12 @@ export default function RegisterPage() {
         password:  form.password,
         full_name: form.full_name,
       })
-      setToken(tokens.access_token)
+      setAuthTokens(tokens.access_token, tokens.refresh_token)
       const { data: user } = await api.get<AuthUser>('/api/auth/me')
       return { tokens, user }
     },
     onSuccess: ({ tokens, user }) => {
-      loginStore(user, tokens.access_token)
+      loginStore(user, tokens.access_token, tokens.refresh_token)
       router.push('/dashboard')
     },
   })

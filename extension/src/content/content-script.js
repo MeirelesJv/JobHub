@@ -3,12 +3,13 @@
  *
  * Injeta em:
  *   http://localhost:3000/*          → relay webapp ↔ extensão
- *   https://www.linkedin.com/jobs/*  → coleta de vagas + Easy Apply turbo
+ *   https://www.linkedin.com/jobs/*  → coleta de vagas + detecção de candidatura
  *   https://*.gupy.io/*              → detecção de vagas
  */
 
 const hostname = location.hostname;
 const pathname = location.pathname;
+const DEBUG_APPLY = true;
 
 // ─── Utils ────────────────────────────────────────────────────────────────────
 
@@ -24,13 +25,41 @@ async function waitFor(fn, timeout = 6000, interval = 250) {
   return null;
 }
 
-// Set value on React-controlled inputs (bypasses virtual DOM diffing)
-function setReactValue(input, value) {
-  const proto  = Object.getPrototypeOf(input);
-  const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-  setter?.call(input, value);
-  input.dispatchEvent(new Event('input',  { bubbles: true }));
-  input.dispatchEvent(new Event('change', { bubbles: true }));
+function debugApply(event, data = {}) {
+  if (!DEBUG_APPLY) return;
+  const payload = {
+    event,
+    href: location.href,
+    at: new Date().toISOString(),
+    ...data,
+  };
+  console.log('[JobHub Apply Debug]', payload);
+  chrome.storage?.local?.set?.({ lastApplyDebug: payload });
+}
+
+function sendRuntimeMessage(message) {
+  try {
+    chrome.runtime.sendMessage(message);
+  } catch (err) {
+    console.warn('[JobHub] Extension context unavailable. Reload the page after reloading the extension.', err);
+  }
+}
+
+function currentLinkedInJobId() {
+  const viewMatch = location.pathname.match(/\/jobs\/view\/(\d+)/);
+  if (viewMatch) return viewMatch[1];
+
+  const params = new URLSearchParams(location.search);
+  const currentJobId = params.get('currentJobId') || params.get('jobId');
+  if (currentJobId) return currentJobId;
+
+  const selectedJob =
+    document.querySelector('[data-job-id]')?.dataset.jobId ||
+    document.querySelector('[data-occludable-job-id]')?.dataset.occludableJobId;
+  if (selectedJob) return selectedJob;
+
+  const jobLink = document.querySelector('a[href*="/jobs/view/"]')?.href;
+  return jobLink?.match(/\/jobs\/view\/(\d+)/)?.[1] || null;
 }
 
 // ─── WEBAPP RELAY (localhost) ─────────────────────────────────────────────────
@@ -45,22 +74,22 @@ function initWebappRelay() {
       return;
     }
     if (type === 'JOBHUB_LOGIN') {
-      chrome.runtime.sendMessage({
-        type:       'LOGIN',
-        token:      event.data.token,
-        user_id:    event.data.user_id,
-        user_email: event.data.user_email,
+      sendRuntimeMessage({
+        type:          'LOGIN',
+        token:         event.data.token,
+        refresh_token: event.data.refresh_token,
+        user_id:       event.data.user_id,
+        user_email:    event.data.user_email,
       });
       return;
     }
     if (type === 'JOBHUB_LOGOUT') {
-      chrome.runtime.sendMessage({ type: 'LOGOUT' });
+      sendRuntimeMessage({ type: 'LOGOUT' });
       return;
     }
-    if (type === 'JOBHUB_APPLY') {
-      chrome.runtime.sendMessage({
-        type:          'APPLY_LINKEDIN',
-        jobUrl:        event.data.jobUrl,
+    if (type === 'JOBHUB_TRACK_APPLY') {
+      sendRuntimeMessage({
+        type:          'TRACK_APPLY',
         linkedinJobId: event.data.linkedinJobId,
         internalJobId: event.data.internalJobId,
       });
@@ -143,7 +172,7 @@ async function collectLinkedInSearchJobs() {
   const jobs = cards.map(extractJobCard).filter(Boolean);
 
   if (jobs.length > 0) {
-    chrome.runtime.sendMessage({ type: 'INGEST_JOBS', jobs });
+    sendRuntimeMessage({ type: 'INGEST_JOBS', jobs });
     console.log(`[JobHub] Collected ${jobs.length} jobs from LinkedIn search`);
   }
 
@@ -159,7 +188,7 @@ function observeNewCards(selector) {
       const cards  = [...document.querySelectorAll(selector)];
       const jobs   = cards.map(extractJobCard).filter(Boolean);
       if (jobs.length > 0) {
-        chrome.runtime.sendMessage({ type: 'INGEST_JOBS', jobs });
+        sendRuntimeMessage({ type: 'INGEST_JOBS', jobs });
       }
     }, 2000);
   });
@@ -169,9 +198,8 @@ function observeNewCards(selector) {
 // ─── LINKEDIN JOB DETAIL ──────────────────────────────────────────────────────
 
 function extractCurrentJobDetail() {
-  const match = pathname.match(/\/jobs\/view\/(\d+)/);
-  if (!match) return null;
-  const jobId = match[1];
+  const jobId = currentLinkedInJobId();
+  if (!jobId) return null;
 
   const titleEl =
     document.querySelector('.job-details-jobs-unified-top-card__job-title h1') ||
@@ -214,134 +242,210 @@ function isEasyApplyJob() {
          !!document.querySelector('.jobs-apply-button--top-card, .jobs-s-apply button');
 }
 
-// ─── LINKEDIN EASY APPLY FORM ─────────────────────────────────────────────────
+// ─── LINKEDIN EASY APPLY DETECTION ────────────────────────────────────────────
 
-function findApplyButton() {
+const PENDING_TRACK_TTL_MS = 30 * 60 * 1000;
+let easyApplyObserver = null;
+let easyApplyTrackedKey = null;
+let easyApplyPollTimer = null;
+let easyApplySubmitSeenAt = null;
+let easyApplyNotified = false;
+
+function normalizedText(node) {
+  return (node?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function findEasyApplyConfirmation() {
   const selectors = [
-    '.jobs-apply-button--top-card',
-    '.jobs-s-apply button',
-    'button.jobs-apply-button',
-    '[data-control-name="jobdetails_topcard_inapply"]',
+    '.jobs-easy-apply-content__confirmation',
+    '[data-test-job-apply-confirmation]',
+    '[data-test-modal-id="easy-apply-modal"] [class*="confirmation"]',
+    '.artdeco-inline-feedback--success',
+    '[class*="success"]',
   ];
-  for (const sel of selectors) {
-    const btn = document.querySelector(sel);
-    if (btn && !btn.disabled) return btn;
-  }
-  return null;
-}
-
-function findPrimaryFooterButton(labels) {
-  const footer = document.querySelector('.jobs-easy-apply-content footer') ||
-                 document.querySelector('.artdeco-modal__actionbar');
-  if (!footer) return null;
-  for (const btn of footer.querySelectorAll('button')) {
-    const text = btn.textContent?.trim() || '';
-    if (labels.some((l) => text.toLowerCase().includes(l.toLowerCase()))) {
-      if (!btn.disabled) return btn;
+  for (const selector of selectors) {
+    const el = document.querySelector(selector);
+    if (!el) continue;
+    const text = normalizedText(el);
+    if (
+      text.includes('application') ||
+      text.includes('candidatura') ||
+      text.includes('submitted') ||
+      text.includes('enviada') ||
+      text.includes('success')
+    ) {
+      return el;
     }
   }
-  return null;
-}
 
-async function fillCurrentStep(profile) {
-  await sleep(500);
+  const modalText = (
+    document.querySelector('.jobs-easy-apply-content')?.textContent ||
+    document.querySelector('[data-test-modal-id="easy-apply-modal"]')?.textContent ||
+    ''
+  ).toLowerCase();
 
-  const modal = document.querySelector('.jobs-easy-apply-content') ||
-                document.querySelector('[data-test-modal]');
-  if (!modal) return;
-
-  // Fill text / tel / email inputs based on label context
-  const formGroups = modal.querySelectorAll(
-    '.fb-form-element, .jobs-easy-apply-form-element, .artdeco-text-entity, [class*="form-element"]'
-  );
-  for (const group of formGroups) {
-    const label = (group.querySelector('label')?.textContent || '').toLowerCase();
-    const input = group.querySelector('input[type="text"], input[type="tel"], input[type="email"], input[type="number"]');
-    if (!input || input.value) continue;
-
-    if (/email/.test(label))                        setReactValue(input, profile.email);
-    else if (/phone|telefone|celular|mobile/.test(label)) setReactValue(input, profile.phone);
-    else if (/name|nome/.test(label))               setReactValue(input, profile.full_name);
+  if (
+    modalText.includes('application submitted') ||
+    modalText.includes('your application was sent') ||
+    modalText.includes('your application has been sent') ||
+    modalText.includes('application sent') ||
+    modalText.includes('submitted successfully') ||
+    modalText.includes('candidatura enviada') ||
+    modalText.includes('sua candidatura foi enviada') ||
+    modalText.includes('candidatura foi enviada') ||
+    modalText.includes('enviada com sucesso')
+  ) {
+    return document.querySelector('.jobs-easy-apply-content') || document.body;
   }
 
-  // Fallback: fill by input type/autocomplete when not in a labeled group
-  const allInputs = modal.querySelectorAll('input:not([value]):not([type="hidden"]):not([type="checkbox"]):not([type="radio"])');
-  for (const input of allInputs) {
-    if (input.value) continue;
-    const ac   = input.autocomplete?.toLowerCase() || '';
-    const name = (input.name || input.id || '').toLowerCase();
-
-    if (ac === 'email' || /email/.test(name))           setReactValue(input, profile.email);
-    else if (ac === 'tel' || /phone|phone/.test(name))  setReactValue(input, profile.phone);
-    else if (/name/.test(name))                         setReactValue(input, profile.full_name);
-  }
-
-  await sleep(300);
-}
-
-async function triggerEasyApply(profile) {
-  const applyBtn = findApplyButton();
-  if (!applyBtn) return { success: false, error: 'Botão Easy Apply não encontrado' };
-
-  applyBtn.click();
-
-  const modal = await waitFor(() =>
-    document.querySelector('.jobs-easy-apply-content') ||
-    document.querySelector('[data-test-modal-id="easy-apply-modal"]'),
-    6000
-  );
-  if (!modal) return { success: false, error: 'Modal Easy Apply não abriu' };
-
-  for (let step = 0; step < 15; step++) {
-    await fillCurrentStep(profile);
-    await sleep(800);
-
-    // Check for success confirmation (already submitted by previous iteration)
-    const confirmation = document.querySelector('.jobs-easy-apply-content__confirmation') ||
-                         document.querySelector('[data-test-job-apply-confirmation]');
-    if (confirmation) return { success: true };
-
-    // Try submit
-    const submitBtn = findPrimaryFooterButton(['Submit application', 'Enviar candidatura', 'Submit', 'Enviar']);
-    if (submitBtn) {
-      submitBtn.click();
-      await sleep(2500);
-      const done = document.querySelector('.jobs-easy-apply-content__confirmation, [data-test-job-apply-confirmation]');
-      return done
-        ? { success: true }
-        : { success: false, error: 'Confirmação não detectada após submit' };
-    }
-
-    // Go to next step
-    const nextBtn = findPrimaryFooterButton(['Next', 'Próximo', 'Continue', 'Review', 'Revisar']);
-    if (!nextBtn) return { success: false, error: `Nenhum botão de navegação encontrado (step ${step})` };
-    nextBtn.click();
-    await sleep(1200);
-  }
-
-  return { success: false, error: 'Número máximo de etapas atingido' };
-}
-
-async function checkPendingApply() {
-  const { pendingApply } = await chrome.storage.local.get('pendingApply');
-  if (!pendingApply) return;
-
-  const currentId = pathname.match(/\/jobs\/view\/(\d+)/)?.[1];
-  if (pendingApply.linkedinJobId !== currentId) return;
-
-  console.log('[JobHub] Pending Easy Apply detected, waiting for page render…');
-  await sleep(3000);
-
-  const result = await triggerEasyApply(pendingApply.profile);
-  console.log('[JobHub] Easy Apply result:', result);
-
-  await chrome.storage.local.remove('pendingApply');
-  chrome.runtime.sendMessage({
-    type:          'APPLY_COMPLETE',
-    success:       result.success,
-    error:         result.error || null,
-    internalJobId: pendingApply.internalJobId,
+  const appliedButton = [...document.querySelectorAll('button, [role="button"]')].find((el) => {
+    const text = normalizedText(el);
+    return (
+      text === 'applied' ||
+      text === 'candidatado' ||
+      text === 'candidatura enviada' ||
+      text.includes('application submitted') ||
+      text.includes('candidatura enviada')
+    );
   });
+  if (appliedButton) return appliedButton;
+
+  return null;
+}
+
+function isFinalSubmitButton(button) {
+  const text = normalizedText(button);
+  return (
+    text.includes('submit application') ||
+    text.includes('send application') ||
+    text.includes('enviar candidatura') ||
+    text === 'submit' ||
+    text === 'enviar'
+  );
+}
+
+async function watchForEasyApplyCompletion() {
+  const { pendingTrack } = await chrome.storage.local.get('pendingTrack');
+  debugApply('watch:init', { pendingTrack, currentId: currentLinkedInJobId() });
+  if (!pendingTrack) return;
+
+  const currentId = currentLinkedInJobId();
+  if (currentId && pendingTrack.linkedinJobId !== currentId) {
+    debugApply('watch:id-mismatch-continuing', {
+      expected: pendingTrack.linkedinJobId,
+      currentId,
+    });
+  }
+
+  const trackedKey = `${pendingTrack.internalJobId}:${pendingTrack.linkedinJobId}`;
+  if (easyApplyTrackedKey === trackedKey && easyApplyObserver) return;
+
+  if (!pendingTrack.startedAt || Date.now() - pendingTrack.startedAt > PENDING_TRACK_TTL_MS) {
+    debugApply('watch:expired', { pendingTrack });
+    await chrome.storage.local.remove('pendingTrack');
+    return;
+  }
+
+  const notifyDetected = async () => {
+    if (easyApplyNotified) return;
+    easyApplyNotified = true;
+    debugApply('apply:detected', {
+      internalJobId: pendingTrack.internalJobId,
+      linkedinJobId: pendingTrack.linkedinJobId,
+    });
+    easyApplyObserver?.disconnect();
+    if (easyApplyPollTimer) clearInterval(easyApplyPollTimer);
+    easyApplyObserver = null;
+    easyApplyTrackedKey = null;
+    easyApplyPollTimer = null;
+    easyApplySubmitSeenAt = null;
+    await chrome.storage.local.remove('pendingTrack');
+    sendRuntimeMessage({
+      type:          'APPLY_DETECTED',
+      internalJobId: pendingTrack.internalJobId,
+      linkedinJobId: pendingTrack.linkedinJobId,
+    });
+  };
+
+  const notifyAfterFinalSubmitClick = () => {
+    easyApplySubmitSeenAt = Date.now();
+    debugApply('submit:clicked', {
+      internalJobId: pendingTrack.internalJobId,
+      linkedinJobId: pendingTrack.linkedinJobId,
+    });
+    setTimeout(async () => {
+      if (findEasyApplyConfirmation()) {
+        debugApply('submit:confirmation-after-click');
+        await notifyDetected();
+        return;
+      }
+
+      const modalStillOpen = document.querySelector(
+        '.jobs-easy-apply-content, [data-test-modal-id="easy-apply-modal"], [role="dialog"]'
+      );
+      const applyButtonText = normalizedText(
+        document.querySelector('.jobs-apply-button--top-card, .jobs-s-apply button, button.jobs-apply-button')
+      );
+
+      if (!modalStillOpen || applyButtonText.includes('applied') || applyButtonText.includes('candidatado')) {
+        debugApply('submit:modal-closed-or-applied', { modalStillOpen: !!modalStillOpen, applyButtonText });
+        await notifyDetected();
+      }
+    }, 3500);
+  };
+
+  if (findEasyApplyConfirmation()) {
+    debugApply('watch:confirmation-already-present');
+    await notifyDetected();
+    return;
+  }
+
+  easyApplyObserver?.disconnect();
+  if (easyApplyPollTimer) clearInterval(easyApplyPollTimer);
+  easyApplyTrackedKey = trackedKey;
+  easyApplyNotified = false;
+  easyApplyObserver = new MutationObserver(async () => {
+    if (!findEasyApplyConfirmation()) return;
+    debugApply('observer:confirmation-found');
+    await notifyDetected();
+  });
+
+  easyApplyObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+  debugApply('watch:armed', { trackedKey });
+
+  document.addEventListener('click', (event) => {
+    const button = event.target?.closest?.('button, [role="button"]');
+    if (!button) return;
+    const text = normalizedText(button);
+    if (text.includes('candidatura') || text.includes('application') || text.includes('submit') || text.includes('enviar')) {
+      debugApply('button:click', { text });
+    }
+    if (isFinalSubmitButton(button)) notifyAfterFinalSubmitClick();
+  }, { capture: true, once: false });
+
+  easyApplyPollTimer = setInterval(async () => {
+    if (Date.now() - pendingTrack.startedAt > PENDING_TRACK_TTL_MS) {
+      easyApplyObserver?.disconnect();
+      clearInterval(easyApplyPollTimer);
+      easyApplyObserver = null;
+      easyApplyPollTimer = null;
+      easyApplyTrackedKey = null;
+      easyApplySubmitSeenAt = null;
+      await chrome.storage.local.remove('pendingTrack');
+      return;
+    }
+    if (findEasyApplyConfirmation()) {
+      await notifyDetected();
+      return;
+    }
+    if (easyApplySubmitSeenAt && Date.now() - easyApplySubmitSeenAt > 2500) {
+      const modalStillOpen = document.querySelector('.jobs-easy-apply-content, [data-test-modal-id="easy-apply-modal"], [role="dialog"]');
+      const applyButtonText = normalizedText(document.querySelector('.jobs-apply-button--top-card, .jobs-s-apply button, button.jobs-apply-button'));
+      if (!modalStillOpen || applyButtonText.includes('applied') || applyButtonText.includes('candidatado')) {
+        await notifyDetected();
+      }
+    }
+  }, 2000);
 }
 
 // ─── GUPY JOB DETAIL ─────────────────────────────────────────────────────────
@@ -355,7 +459,7 @@ function detectGupy() {
   const company = document.querySelector('[data-testid="company-name"]')?.textContent?.trim()
     || location.hostname.replace('.gupy.io', '');
 
-  chrome.runtime.sendMessage({ type: 'JOB_VIEWED', platform: 'gupy', job_id: jobId, title, company });
+  sendRuntimeMessage({ type: 'JOB_VIEWED', platform: 'gupy', job_id: jobId, title, company });
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -377,14 +481,27 @@ if (hostname === 'localhost' || hostname === '127.0.0.1') {
       await waitFor(() => document.querySelector('h1'), 5000);
       const job = extractCurrentJobDetail();
       if (job?.title) {
-        chrome.runtime.sendMessage({ type: 'INGEST_JOBS', jobs: [job] });
-        chrome.runtime.sendMessage({ type: 'JOB_VIEWED', platform: 'linkedin', job_id: job.external_id, title: job.title, company: job.company });
+        sendRuntimeMessage({ type: 'INGEST_JOBS', jobs: [job] });
+        sendRuntimeMessage({ type: 'JOB_VIEWED', platform: 'linkedin', job_id: job.external_id, title: job.title, company: job.company });
       }
-      // Check if extension should auto-apply
-      await checkPendingApply();
+      // Track manual Easy Apply completion when started from JobHub.
+      await watchForEasyApplyCompletion();
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local' && changes.pendingTrack) {
+          watchForEasyApplyCompletion();
+        }
+      });
     });
   } else if (pathname.includes('/jobs/')) {
-    onReady(collectLinkedInSearchJobs);
+    onReady(async () => {
+      await collectLinkedInSearchJobs();
+      await watchForEasyApplyCompletion();
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local' && changes.pendingTrack) {
+          watchForEasyApplyCompletion();
+        }
+      });
+    });
   }
 } else if (hostname.endsWith('.gupy.io')) {
   onReady(detectGupy);

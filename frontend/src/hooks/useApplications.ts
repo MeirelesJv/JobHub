@@ -20,7 +20,7 @@ export function useAppliedJobIds(): Set<number> {
   const { data } = useQuery<Application[]>({
     queryKey: ['applications'],
     queryFn: () => api.get<Application[]>('/api/applications').then((r) => r.data),
-    staleTime: 60_000,
+    refetchOnWindowFocus: 'always',
   })
 
   return useMemo(() => new Set(data?.map((application) => application.job_id) ?? []), [data])

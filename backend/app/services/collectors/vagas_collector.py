@@ -157,12 +157,12 @@ def _should_keep_location(job: dict, city: str) -> bool:
 
 
 def _parse_level(text: str) -> JobLevel | None:
-    lower = text.lower()
-    if "junior" in lower or "j\u00fanior" in lower or "trainee" in lower or "jr" in lower:
+    normalized = _normalize(text)
+    if re.search(r"(?<![a-z0-9])(?:junior|jr|trainee)(?![a-z0-9])", normalized):
         return JobLevel.JUNIOR
-    if "pleno" in lower:
+    if re.search(r"(?<![a-z0-9])(?:pleno|pl)(?![a-z0-9])", normalized):
         return JobLevel.PLENO
-    if "senior" in lower or "s\u00eanior" in lower or "sr" in lower:
+    if re.search(r"(?<![a-z0-9])(?:senior|sr)(?![a-z0-9])", normalized):
         return JobLevel.SENIOR
     return None
 

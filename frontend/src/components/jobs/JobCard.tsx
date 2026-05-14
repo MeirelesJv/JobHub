@@ -4,15 +4,20 @@ import { type KeyboardEvent, type MouseEvent } from 'react'
 import { formatDistanceToNow, parseISO } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import type { Job } from '@/types'
+import { trackLinkedInApply } from '@/lib/extension'
 
 interface Props {
   job:       Job
-  onApply:   (job: Job) => void
   onExpand:  (job: Job) => void
   onView?:   (job: Job) => void
-  applying?: boolean
+  onMarkApplied?: (job: Job) => void
+  onDismissNew?: (job: Job) => void
   applied?:  boolean
+  applying?: boolean
   viewed?:   boolean
+  showDismissNew?: boolean
+  primaryActionLabel?: string
+  primaryAction?: 'view_site' | 'mark_applied'
 }
 
 const PLATFORM_META: Record<string, { label: string; badge: string }> = {
@@ -35,7 +40,19 @@ const TYPE_LABEL: Record<string, string> = {
   freelance: 'Freelance',
 }
 
-export function JobCard({ job, onApply, onExpand, onView, applying = false, applied = false, viewed = false }: Props) {
+export function JobCard({
+  job,
+  onExpand,
+  onView,
+  onMarkApplied,
+  onDismissNew,
+  applied = false,
+  applying = false,
+  viewed = false,
+  showDismissNew = false,
+  primaryActionLabel = 'Candidatar',
+  primaryAction = 'view_site',
+}: Props) {
   const platform = PLATFORM_META[job.platform] ?? { label: job.platform, badge: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400' }
   const isNew = Date.now() - new Date(job.created_at).getTime() < 24 * 60 * 60 * 1000
 
@@ -64,6 +81,26 @@ export function JobCard({ job, onApply, onExpand, onView, applying = false, appl
 
   const stopCardClick = (event: MouseEvent) => {
     event.stopPropagation()
+  }
+
+  const handlePrimaryAction = (event: MouseEvent) => {
+    stopCardClick(event)
+    if (applying) return
+    if (primaryAction === 'mark_applied') {
+      if (applied) return
+      onMarkApplied?.(job)
+      return
+    }
+    if (job.easy_apply && job.platform === 'linkedin') {
+      trackLinkedInApply({ linkedinJobId: job.external_id, internalJobId: job.id })
+    }
+    onView?.(job)
+    window.open(job.url, '_blank', 'noopener,noreferrer')
+  }
+
+  const handleDismissNew = (event: MouseEvent) => {
+    stopCardClick(event)
+    onDismissNew?.(job)
   }
 
   return (
@@ -165,31 +202,16 @@ export function JobCard({ job, onApply, onExpand, onView, applying = false, appl
       {/* Actions */}
       <div className="flex items-center gap-2">
         <button
-          onClick={(event) => {
-            stopCardClick(event)
-            onApply(job)
-          }}
-          disabled={applying || applied}
+          onClick={handlePrimaryAction}
+          disabled={applying || (applied && primaryAction === 'mark_applied')}
           className={`flex-1 py-2 px-3 text-sm font-semibold rounded-xl transition-colors ${
-            applied
+            applied && primaryAction === 'mark_applied'
               ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-700 cursor-default'
-              : 'bg-primary-600 hover:bg-primary-700 disabled:bg-primary-400 text-white'
+              : 'bg-primary-600 hover:bg-primary-700 disabled:bg-primary-400 disabled:cursor-not-allowed text-white'
           }`}
         >
-          {applied ? '✓ Candidatado' : applying ? 'Registrando…' : 'Candidatar'}
+          {applied && primaryAction === 'mark_applied' ? '✓ Candidatado' : applying ? 'Adicionando…' : primaryActionLabel}
         </button>
-        <a
-          href={job.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={(event) => {
-            stopCardClick(event)
-            onView?.(job)
-          }}
-          className="py-2 px-3 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 text-sm font-medium rounded-xl transition-colors"
-        >
-          Ver vaga
-        </a>
         <button
           onClick={openDetails}
           className="py-2 px-3 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 rounded-xl transition-colors"
@@ -200,6 +222,17 @@ export function JobCard({ job, onApply, onExpand, onView, applying = false, appl
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
           </svg>
         </button>
+        {showDismissNew && (
+          <button
+            onClick={handleDismissNew}
+            className="py-2 px-3 border border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 rounded-xl transition-colors"
+            title="Remover das novas"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14" />
+            </svg>
+          </button>
+        )}
       </div>
     </div>
   )

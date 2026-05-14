@@ -122,6 +122,13 @@ def get_jobs(
         q = q.filter(Job.salary_min >= filters.salary_min)
     if filters.salary_max is not None:
         q = q.filter(Job.salary_max <= filters.salary_max)
+    if filters.desired_roles:
+        role_clauses = [
+            clause for clause in (_desired_role_clause(role_name) for role_name in filters.desired_roles)
+            if clause is not None
+        ]
+        if role_clauses:
+            q = q.filter(or_(*role_clauses))
 
     # Location filter: only show jobs matching the user's city/state OR remote jobs
     if user_id is not None and not filters.location:
@@ -148,16 +155,17 @@ def get_jobs(
             for company in blocked_companies:
                 q = q.filter(~Job.company.ilike(f"%{company}%"))
 
-            role_names = [role.role_name for role in user.desired_roles]
-            if not role_names and user.desired_role:
-                role_names = [user.desired_role]
+            if not filters.desired_roles:
+                role_names = [role.role_name for role in user.desired_roles]
+                if not role_names and user.desired_role:
+                    role_names = [user.desired_role]
 
-            role_clauses = [
-                clause for clause in (_desired_role_clause(role_name) for role_name in role_names)
-                if clause is not None
-            ]
-            if role_clauses:
-                q = q.filter(or_(*role_clauses))
+                role_clauses = [
+                    clause for clause in (_desired_role_clause(role_name) for role_name in role_names)
+                    if clause is not None
+                ]
+                if role_clauses:
+                    q = q.filter(or_(*role_clauses))
 
     _ORDER = {
         "date_desc":    [Job.published_at.desc().nulls_last(), Job.created_at.desc()],
@@ -168,13 +176,14 @@ def get_jobs(
     order_clause = _ORDER.get(sort_by, _ORDER["date_desc"])
 
     total = q.count()
+    new_total = q.filter(Job.created_at >= now - timedelta(days=1)).count()
     items = (
         q.order_by(*order_clause)
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
-    return JobListResponse(items=items, total=total, page=page, page_size=page_size)
+    return JobListResponse(items=items, total=total, new_total=new_total, page=page, page_size=page_size)
 
 
 def get_job_by_id(db: Session, job_id: int) -> Job:
@@ -219,6 +228,48 @@ def search_jobs(db: Session, query: str, filters: JobFilters, page: int = 1, pag
 
 
 # ── platform helpers ────────────────────────────────────────────────────────
+
+def get_platform_sync_anchor(
+    db: Session,
+    platform: JobPlatform,
+    keyword: str | None = None,
+) -> tuple[datetime | None, str | None]:
+    """Retorna (published_at, external_id) da vaga mais recente para plataforma + keyword."""
+    q = db.query(Job.published_at, Job.external_id).filter(
+        Job.platform == platform,
+        Job.is_active.is_(True),
+        Job.published_at.isnot(None),
+    )
+
+    if keyword:
+        role_clause = _desired_role_clause(keyword)
+        if role_clause is not None:
+            q = q.filter(role_clause)
+
+    row = q.order_by(Job.published_at.desc()).limit(1).first()
+    if not row:
+        return None, None
+    return row.published_at, row.external_id
+
+
+def compute_sync_cutoff(
+    latest_date: datetime | None,
+    max_days: int = 30,
+    overlap_days: int = 1,
+) -> datetime:
+    """Se há sync anterior: cutoff = latest_date - overlap. Senão: now - max_days."""
+    now = datetime.now(timezone.utc)
+    max_cutoff = now - timedelta(days=max_days)
+    if latest_date is None:
+        return max_cutoff
+
+    if latest_date.tzinfo is None:
+        latest_date = latest_date.replace(tzinfo=timezone.utc)
+    else:
+        latest_date = latest_date.astimezone(timezone.utc)
+
+    return max(latest_date - timedelta(days=overlap_days), max_cutoff)
+
 
 def ensure_platform(db: Session, name: str, slug: str) -> Platform:
     platform = db.query(Platform).filter(Platform.slug == slug).first()

@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.job import JobLevel, JobPlatform, JobType
 
@@ -33,12 +33,14 @@ class JobResponse(BaseModel):
 class JobListResponse(BaseModel):
     items: list[JobResponse]
     total: int
+    new_total: int = 0
     page: int
     page_size: int
 
 
 class JobFilters(BaseModel):
     query: Optional[str] = None
+    desired_roles: list[str] = Field(default_factory=list)
     location: Optional[str] = None
     job_type: Optional[JobType] = None
     level: Optional[JobLevel] = None

@@ -13,7 +13,14 @@ from sqlalchemy.orm import Session
 
 from app.models.job import JobLevel, JobPlatform, JobType
 from app.services.collectors.vagas_collector import _build_keyword_matcher, _title_matches
-from app.services.job_service import close_sync_log, ensure_platform, open_sync_log, save_job
+from app.services.job_service import (
+    close_sync_log,
+    compute_sync_cutoff,
+    ensure_platform,
+    get_platform_sync_anchor,
+    open_sync_log,
+    save_job,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +33,6 @@ FETCH_RETRIES = 3
 
 _HEADERS = {"Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8"}
 _REMOTE_KEYWORDS = frozenset(["home office", "remoto", "remote", "híbrido", "hibrido", "trabalhe de casa"])
-_MAX_AGE = timedelta(days=30)
 _CITY_STATES = {
     "sao-paulo": "sp",
     "rio-de-janeiro": "rj",
@@ -93,12 +99,12 @@ def _should_keep_location(job: dict, city: str) -> bool:
 
 
 def _parse_level(text: str) -> JobLevel | None:
-    lower = text.lower()
-    if "junior" in lower or "júnior" in lower or "trainee" in lower or f" jr" in f" {lower}":
+    normalized = unicodedata.normalize("NFKD", text.lower()).encode("ascii", "ignore").decode("ascii")
+    if re.search(r"(?<![a-z0-9])(?:junior|jr|trainee)(?![a-z0-9])", normalized):
         return JobLevel.JUNIOR
-    if "pleno" in lower or f" pl" in f" {lower}":
+    if re.search(r"(?<![a-z0-9])(?:pleno|pl)(?![a-z0-9])", normalized):
         return JobLevel.PLENO
-    if "senior" in lower or "sênior" in lower or f" sr" in f" {lower}":
+    if re.search(r"(?<![a-z0-9])(?:senior|sr)(?![a-z0-9])", normalized):
         return JobLevel.SENIOR
     return None
 
@@ -290,9 +296,14 @@ def _parse_cards(html: str) -> list[dict]:
     return list(jobs_by_id.values())
 
 
-def _fetch_all_pages(keyword: str, city: str | None, matcher: dict) -> list[dict]:
+def _fetch_all_pages(
+    keyword: str,
+    city: str | None,
+    matcher: dict,
+    cutoff: datetime,
+    anchor_id: str | None,
+) -> list[dict]:
     collected: dict[str, dict] = {}
-    cutoff = datetime.now(timezone.utc) - _MAX_AGE
 
     for page in range(1, MAX_PAGES + 1):
         url = _search_url(keyword, city, page)
@@ -316,6 +327,11 @@ def _fetch_all_pages(keyword: str, city: str | None, matcher: dict) -> list[dict
         if not cards:
             break
 
+        anchor_found = anchor_id is not None and any(j["external_id"] == anchor_id for j in cards)
+        cutoff_reached = any(
+            j["published_at"] is not None and j["published_at"] < cutoff
+            for j in cards
+        )
         recent = [j for j in cards if j["published_at"] is None or j["published_at"] >= cutoff]
         matched = [j for j in recent if _title_matches(j["title"], matcher)]
         logger.info("Catho: %d/%d vagas passaram no filtro de título", len(matched), len(recent))
@@ -324,6 +340,12 @@ def _fetch_all_pages(keyword: str, city: str | None, matcher: dict) -> list[dict
             collected.setdefault(job["external_id"], job)
 
         if len(cards) < PAGE_SIZE or not recent:
+            break
+        if cutoff_reached:
+            logger.info("Catho: cutoff %s atingido na página %d — encerrando paginação", cutoff.date(), page)
+            break
+        if anchor_found:
+            logger.info("Catho: anchor %s encontrado na página %d — encerrando paginação", anchor_id, page)
             break
 
         if page < MAX_PAGES:
@@ -340,13 +362,15 @@ def collect(
 ) -> tuple[int, int]:
     platform = ensure_platform(db, PLATFORM_NAME, PLATFORM_SLUG)
     log = open_sync_log(db, platform, user_id)
+    latest_date, anchor_id = get_platform_sync_anchor(db, JobPlatform.CATHO, keyword)
+    cutoff = compute_sync_cutoff(latest_date)
     matcher = _build_keyword_matcher(keyword)
 
     jobs_found = 0
     jobs_new = 0
     try:
         candidates = [
-            job for job in _fetch_all_pages(keyword, city, matcher)
+            job for job in _fetch_all_pages(keyword, city, matcher, cutoff, anchor_id)
             if city is None or _should_keep_location(job, city)
         ]
 

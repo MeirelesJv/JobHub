@@ -44,6 +44,7 @@ class ExtensionJobData(BaseModel):
 def list_jobs(
     response: Response,
     query: str | None = Query(None),
+    desired_role: list[str] = Query(default=[]),
     location: str | None = Query(None),
     job_type: JobType | None = Query(None),
     level: JobLevel | None = Query(None),
@@ -59,6 +60,7 @@ def list_jobs(
 ):
     filters = JobFilters(
         query=query,
+        desired_roles=desired_role,
         location=location,
         job_type=job_type,
         level=level,
