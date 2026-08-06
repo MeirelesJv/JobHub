@@ -8,18 +8,19 @@ Feito pra uso pessoal, single-user, 100% via Docker — sem cadastro, sem login,
 
 ## Stack
 
-| Camada | Tecnologia |
-|---|---|
-| Frontend | Next.js 14, TailwindCSS, React Query |
-| Backend | Python 3.12, FastAPI, PostgreSQL, Redis |
+| Camada          | Tecnologia                                |
+| --------------- | ----------------------------------------- |
+| Frontend        | Next.js 14, TailwindCSS, React Query      |
+| Backend         | Python 3.12, FastAPI, PostgreSQL, Redis   |
 | Coleta de vagas | Celery (worker + beat), Playwright, httpx |
-| Infra | Docker Compose |
+| Infra           | Docker Compose                            |
 
 ---
 
 ## Pré-requisitos
 
 Só o **Docker Desktop**:
+
 - Download: https://www.docker.com/products/docker-desktop/
 - Durante a instalação, manter "Use WSL 2 based engine" marcado (padrão)
 - Depois de instalar, abrir o Docker Desktop e esperar o ícone da bandeja ficar verde
@@ -33,7 +34,7 @@ Nada de `.env`, chave de API ou variável pra configurar — tudo já vem fixo n
 ### 1. Clonar o repositório
 
 ```powershell
-git clone https://github.com/seu-usuario/jobhub.git
+git clone https://github.com/MeirelesJv/JobHub.git
 cd jobhub
 ```
 
@@ -42,6 +43,7 @@ cd jobhub
 Dê duplo clique em **`JobHub.exe`**, na raiz do projeto. É um executável standalone — não precisa ter Python nem nada além do Docker instalado.
 
 Isso abre uma janelinha com um botão **Iniciar sistema**. Clique nele:
+
 - Primeira vez: constrói as imagens Docker (uns 5–10 min — baixa dependências, o Playwright baixa o Chromium)
 - Próximas vezes: sobe os containers já prontos (segundos)
 
@@ -64,6 +66,7 @@ Primeiro acesso cai direto na tela de configuração inicial (onboarding) — s�
 ### 4. Usar o feed de vagas
 
 Na aba **Vagas**:
+
 - Filtre por cargo, plataforma, nível, regime e modalidade
 - **Atualizar vagas** dispara uma busca manual nos sites habilitados
 - Cada card mostra o % de compatibilidade (match) com seu perfil
@@ -81,13 +84,13 @@ Na aba **Currículo**, preencha experiências, formação, habilidades e idiomas
 
 Na aba **Configurações → Vagas**, dá pra configurar:
 
-| Opção | O que faz |
-|---|---|
-| **Sites para pesquisa manual** | Quais sites entram quando você clica em "Atualizar vagas" |
-| **Sites para busca automática** | Quais sites o JobHub varre sozinho em segundo plano (lista independente da manual) |
-| **Frequência da busca automática** | 10 min / 30 min / 1h / 2h |
-| **Limite de busca** | 7 / 15 / 30 dias — até quando no passado ele procura vagas. Vagas somem do feed automaticamente 1 dia depois de saírem desse limite (a menos que você já tenha se candidatado — essas nunca são apagadas) |
-| **Empresas bloqueadas** | Empresas que nunca devem aparecer no feed |
+| Opção                              | O que faz                                                                                                                                                                                                 |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Sites para pesquisa manual**     | Quais sites entram quando você clica em "Atualizar vagas"                                                                                                                                                 |
+| **Sites para busca automática**    | Quais sites o JobHub varre sozinho em segundo plano (lista independente da manual)                                                                                                                        |
+| **Frequência da busca automática** | 10 min / 30 min / 1h / 2h                                                                                                                                                                                 |
+| **Limite de busca**                | 7 / 15 / 30 dias — até quando no passado ele procura vagas. Vagas somem do feed automaticamente 1 dia depois de saírem desse limite (a menos que você já tenha se candidatado — essas nunca são apagadas) |
+| **Empresas bloqueadas**            | Empresas que nunca devem aparecer no feed                                                                                                                                                                 |
 
 A busca automática roda sozinha no `celery-beat` mesmo com o navegador fechado, desde que os containers estejam de pé (ou seja: mesmo com a janela do JobHub minimizada na bandeja).
 
@@ -103,13 +106,13 @@ Isso mantém os dados salvos. Pra resetar tudo (apagar o banco), use o terminal 
 
 Cada plataforma tem um collector próprio em `backend/app/services/collectors/`, rodando dentro do worker Celery — sem depender de extensão de navegador nem sessão aberta:
 
-| Plataforma | Estratégia |
-|---|---|
-| LinkedIn | scraping via API pública de busca |
-| Gupy | Playwright headless (portal + API interna) |
-| Vagas.com.br | HTML público via httpx |
-| Catho | httpx com impersonation anti-bot |
-| InfoJobs | HTML público via httpx |
+| Plataforma   | Estratégia                                 |
+| ------------ | ------------------------------------------ |
+| LinkedIn     | scraping via API pública de busca          |
+| Gupy         | Playwright headless (portal + API interna) |
+| Vagas.com.br | HTML público via httpx                     |
+| Catho        | httpx com impersonation anti-bot           |
+| InfoJobs     | HTML público via httpx                     |
 
 Todos usam o mesmo mecanismo de corte: param de paginar assim que encontram uma vaga já vista antes (`get_platform_sync_anchor` / `compute_sync_cutoff` em `job_service.py`), então uma nova rodada de sync é rápida.
 
@@ -156,12 +159,12 @@ jobhub/
 
 ## Quando usar `--build`
 
-| Situação | Precisa `--build`? |
-|---|---|
-| Editar código Python/JS | Não — hot reload automático via volume |
-| Alterar `requirements.txt` | Sim |
-| Alterar `package.json` | Sim |
-| Alterar `Dockerfile` ou `docker-compose.yml` | Sim |
+| Situação                                     | Precisa `--build`?                     |
+| -------------------------------------------- | -------------------------------------- |
+| Editar código Python/JS                      | Não — hot reload automático via volume |
+| Alterar `requirements.txt`                   | Sim                                    |
+| Alterar `package.json`                       | Sim                                    |
+| Alterar `Dockerfile` ou `docker-compose.yml` | Sim                                    |
 
 ---
 
@@ -213,43 +216,54 @@ O executável novo aparece em `dist\JobHub.exe` — mova pra raiz do projeto sub
 ## Problemas comuns
 
 **Docker não inicia / ícone vermelho**
+
 - Abrir Docker Desktop e esperar ficar verde antes de clicar em "Iniciar sistema" (ou rodar `docker compose up`)
 
 **"Docker Desktop não está rodando" no painel mesmo com o Docker aberto**
+
 - Espera o ícone da bandeja do Docker Desktop ficar verde (não só abrir a janela) e clica em "Iniciar sistema" de novo
 
 **Porta já em uso**
+
 ```powershell
 netstat -ano | findstr :8000
 taskkill /PID <PID> /F
 ```
 
 **Backend não conecta ao banco**
+
 - O healthcheck do PostgreSQL garante a ordem de inicialização. Se falhar:
+
 ```powershell
 docker compose down -v
 docker compose up --build
 ```
 
 **Mudei o código mas não refletiu**
+
 - Frontend e backend têm hot reload via volume mount. Se não refletir, reinicie o container:
+
 ```powershell
 docker compose restart backend
 docker compose restart frontend
 ```
 
 **Log do worker não para de imprimir SQL**
+
 - É o log de query do SQLAlchemy — só aparece com `DEBUG=true`. No setup atual o padrão já é `DEBUG=false`; se algum dia precisar debugar SQL, defina `DEBUG: "true"` em `environment:` do serviço `backend`/`celery` no `docker-compose.yml`.
 
 **Busca automática não roda**
+
 - Confirme que o container `celery-beat` está de pé: `docker compose ps`. É ele (não o `celery` sozinho) quem dispara a sync periódica.
 
 **Diferença entre minimizar, fechar no X e "Sair" da bandeja**
+
 - **Minimizar**: vai pra bandeja, tudo continua rodando (esse é o uso normal do dia a dia)
 - **X**: para os containers (`docker compose down`) e fecha o painel — desliga tudo de verdade
 - **Sair** (menu da bandeja): fecha só o painel, sem mexer nos containers — use se quiser deixar o JobHub rodando em segundo plano sem o ícone de bandeja visível
 
 **Antivírus/SmartScreen reclama do `JobHub.exe`**
+
 - Comum em executáveis gerados com PyInstaller sem assinatura digital, é falso positivo. Pode conferir o código-fonte em `jobhub_app.py` ou rebuildar localmente (veja acima).
 
 ---
@@ -259,6 +273,7 @@ docker compose restart frontend
 MVP funcional cobre: coleta multi-plataforma, feed com match score, kanban manual de candidaturas, busca automática configurável em segundo plano.
 
 Não implementado ainda (ver `CLAUDE.md` pra escopo completo):
+
 - Candidatura automática (Turbo/Assisted mode)
 - Matching por IA (Claude API) para ranquear o feed
 - Sync automático de status de candidatura nas plataformas
