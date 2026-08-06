@@ -1,9 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '@/lib/api'
 
+export type DesiredRoleLevel = 'junior' | 'pleno' | 'senior'
+
 export interface DesiredRole {
   id:         number
   role_name:  string
+  level:      DesiredRoleLevel | null
   is_primary: boolean
   order:      number
 }
@@ -22,7 +25,7 @@ export function useDesiredRoles() {
 export function useAddRole() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (data: { role_name: string; is_primary?: boolean; order?: number }) =>
+    mutationFn: (data: { role_name: string; level?: DesiredRoleLevel | null; is_primary?: boolean; order?: number }) =>
       api.post<DesiredRole>('/api/users/roles', data).then((r) => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['desiredRoles'] }),
   })

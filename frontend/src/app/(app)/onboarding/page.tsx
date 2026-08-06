@@ -1,40 +1,29 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
-import { useAuthStore } from '@/store/auth.store'
+import { useEffect } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { useUserStore } from '@/store/user.store'
 import { OnboardingLayout } from '@/components/onboarding/OnboardingLayout'
-import OnboardingStep1 from '@/components/onboarding/OnboardingStep1'
-import OnboardingStep2 from '@/components/onboarding/OnboardingStep2'
-import OnboardingStep3 from '@/components/onboarding/OnboardingStep3'
+import OnboardingForm from '@/components/onboarding/OnboardingForm'
 
 export default function OnboardingPage() {
   const router = useRouter()
-  const user   = useAuthStore((s) => s.user)
-  const [step, setStep] = useState(1)
+  const searchParams = useSearchParams()
+  const user   = useUserStore((s) => s.user)
+
+  const preview = process.env.NODE_ENV !== 'production' && searchParams.get('preview') === '1'
 
   useEffect(() => {
-    if (user?.onboarding_completed === true) {
+    if (!preview && user?.onboarding_completed === true) {
       router.replace('/dashboard')
     }
-  }, [user, router])
+  }, [user, router, preview])
 
-  if (user?.onboarding_completed === true) return null
+  if (!preview && user?.onboarding_completed === true) return null
 
   return (
-    <OnboardingLayout step={step} totalSteps={3}>
-      {step === 1 && (
-        <OnboardingStep1 onNext={() => setStep(2)} />
-      )}
-      {step === 2 && (
-        <OnboardingStep2
-          onNext={() => setStep(3)}
-          onBack={() => setStep(1)}
-        />
-      )}
-      {step === 3 && (
-        <OnboardingStep3 onBack={() => setStep(2)} />
-      )}
+    <OnboardingLayout step={1} totalSteps={1}>
+      <OnboardingForm />
     </OnboardingLayout>
   )
 }

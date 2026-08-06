@@ -7,6 +7,7 @@ from sqlalchemy import Boolean, DateTime, Integer, JSON, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+from app.models.job import JobPlatform
 
 if TYPE_CHECKING:
     from app.models.application import Application
@@ -15,12 +16,15 @@ if TYPE_CHECKING:
     from app.models.sync_log import SyncLog
 
 
+def _all_platforms() -> list[str]:
+    return [p.value for p in JobPlatform]
+
+
 class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[Optional[str]] = mapped_column(String(50))
     location: Mapped[Optional[str]] = mapped_column(String(255))
@@ -29,11 +33,16 @@ class User(Base):
     desired_role: Mapped[Optional[str]] = mapped_column(String(255))
     location_preference: Mapped[Optional[str]] = mapped_column(String(255))
     job_type_preference: Mapped[Optional[str]] = mapped_column(String(50))
-    level_preference: Mapped[Optional[str]] = mapped_column(String(50))
     remote_preference: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
-    salary_expectation_min: Mapped[Optional[int]] = mapped_column(Integer)
     blocked_companies: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    enabled_platforms: Mapped[list[str]] = mapped_column(JSON, default=_all_platforms, nullable=False)
+    auto_sync_platforms: Mapped[list[str]] = mapped_column(JSON, default=_all_platforms, nullable=False)
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
+    # Sync scheduling
+    sync_interval_minutes: Mapped[int] = mapped_column(Integer, default=120, server_default="120", nullable=False)
+    search_lookback_days: Mapped[int] = mapped_column(Integer, default=30, server_default="30", nullable=False)
+    last_auto_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

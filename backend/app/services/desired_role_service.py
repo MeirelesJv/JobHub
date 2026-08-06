@@ -38,6 +38,7 @@ def add_role(db: Session, user_id: int, data: DesiredRoleCreate) -> UserDesiredR
     role = UserDesiredRole(
         user_id=user_id,
         role_name=data.role_name,
+        level=data.level,
         is_primary=make_primary,
         order=data.order if data.order is not None else count,
     )

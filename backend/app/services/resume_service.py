@@ -41,6 +41,12 @@ def update_resume(db: Session, user_id: int, data: ResumeUpdate) -> Resume:
         resume.title = data.title
     if data.summary is not None:
         resume.summary = data.summary
+    if data.gender is not None:
+        resume.gender = data.gender
+    if data.is_pcd is not None:
+        resume.is_pcd = data.is_pcd
+    if data.extra_keywords is not None:
+        resume.extra_keywords = data.extra_keywords
     db.commit()
     return _load(db, user_id)
 

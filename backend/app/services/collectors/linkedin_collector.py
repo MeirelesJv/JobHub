@@ -14,13 +14,16 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.models.job import JobLevel, JobPlatform
+from app.models.platform import Platform
 from app.services.collectors.html_utils import html_to_text
 from app.services.job_service import (
     close_sync_log,
     compute_sync_cutoff,
     ensure_platform,
     get_platform_sync_anchor,
+    get_search_lookback_days,
     open_sync_log,
+    record_structural_check,
     save_job,
 )
 
@@ -421,6 +424,8 @@ def _parse_cards(html: str) -> list[dict]:
 
 
 def _fetch_all_pages(
+    db: Session,
+    platform: Platform,
     base_params: dict,
     expanded: frozenset[str],
     cutoff: datetime,
@@ -444,6 +449,11 @@ def _fetch_all_pages(
             resp.raise_for_status()
             cards = _parse_cards(resp.text)
             logger.info("LinkedIn status=%d cards_parsed=%d", resp.status_code, len(cards))
+            if page == 0:
+                record_structural_check(
+                    db, platform, ok=bool(cards), step="listagem (regex de card no HTML)",
+                    detail=None if cards else f"HTTP {resp.status_code} OK, 0 cards extraídos pelo regex de listagem",
+                )
         except Exception as exc:
             logger.warning("LinkedIn fetch error page=%d params=%s: %s", page, params, exc)
             break
@@ -483,7 +493,7 @@ def collect(
     platform = ensure_platform(db, PLATFORM_NAME, PLATFORM_SLUG)
     log      = open_sync_log(db, platform, user_id)
     latest_date, anchor_id = get_platform_sync_anchor(db, JobPlatform.LINKEDIN, keyword)
-    cutoff = compute_sync_cutoff(latest_date)
+    cutoff = compute_sync_cutoff(latest_date, max_days=get_search_lookback_days(db))
 
     city = None if location.lower() in ("brasil", "brazil", "") else location
     expanded = _expand_keyword(keyword)
@@ -505,7 +515,7 @@ def collect(
                 "f_TPR":    "r2592000",
                 "count":    PAGE_SIZE,
             }
-            for job in _fetch_all_pages(city_params, expanded, cutoff, anchor_id, required_groups, on_progress=on_progress, label="cidade pg"):
+            for job in _fetch_all_pages(db, platform, city_params, expanded, cutoff, anchor_id, required_groups, on_progress=on_progress, label="cidade pg"):
                 jobs_by_id[job["external_id"]] = job
 
             # Busca 2: vagas remotas no Brasil (apenas quando há cidade específica)
@@ -520,7 +530,7 @@ def collect(
                     "f_WT":     "2",  # remote work type
                     "count":    PAGE_SIZE,
                 }
-                for job in _fetch_all_pages(remote_params, expanded, cutoff, anchor_id, required_groups, on_progress=on_progress, label="remoto pg"):
+                for job in _fetch_all_pages(db, platform, remote_params, expanded, cutoff, anchor_id, required_groups, on_progress=on_progress, label="remoto pg"):
                     job["remote"] = True  # encontrada via filtro f_WT=2 — garantidamente remota
                     if job["external_id"] in jobs_by_id:
                         jobs_by_id[job["external_id"]]["remote"] = True

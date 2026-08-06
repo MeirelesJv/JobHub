@@ -8,16 +8,19 @@ interface Props {
 
 export function OnboardingLayout({ step, totalSteps, children }: Props) {
   const progress = Math.round((step / totalSteps) * 100)
+  const showStepIndicator = totalSteps > 1
 
   return (
-    <div className="fixed inset-0 z-50 bg-white overflow-y-auto">
+    <div className="fixed inset-0 z-50 bg-white dark:bg-gray-900 overflow-y-auto">
       {/* Progress bar */}
-      <div className="h-1 bg-gray-100">
-        <div
-          className="h-full bg-primary-600 transition-all duration-500 ease-out"
-          style={{ width: `${progress}%` }}
-        />
-      </div>
+      {showStepIndicator && (
+        <div className="h-1 bg-gray-100 dark:bg-gray-800">
+          <div
+            className="h-full bg-primary-600 transition-all duration-500 ease-out"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      )}
 
       {/* Content */}
       <div className="max-w-lg mx-auto px-5 py-10">
@@ -30,24 +33,28 @@ export function OnboardingLayout({ step, totalSteps, children }: Props) {
                   d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
               </svg>
             </div>
-            <span className="text-2xl font-bold text-gray-900">JobHub</span>
+            <span className="text-2xl font-bold text-gray-900 dark:text-white">JobHub</span>
           </div>
 
-          {/* Step dots */}
-          <div className="flex items-center justify-center gap-2 mt-4">
-            {Array.from({ length: totalSteps }).map((_, i) => (
-              <div
-                key={i}
-                className={[
-                  'rounded-full transition-all duration-300',
-                  i + 1 < step  ? 'w-2 h-2 bg-primary-600' :
-                  i + 1 === step ? 'w-3 h-3 bg-primary-600' :
-                                   'w-2 h-2 bg-gray-200',
-                ].join(' ')}
-              />
-            ))}
-          </div>
-          <p className="text-xs text-gray-400 mt-2">Passo {step} de {totalSteps}</p>
+          {showStepIndicator && (
+            <>
+              {/* Step dots */}
+              <div className="flex items-center justify-center gap-2 mt-4">
+                {Array.from({ length: totalSteps }).map((_, i) => (
+                  <div
+                    key={i}
+                    className={[
+                      'rounded-full transition-all duration-300',
+                      i + 1 < step  ? 'w-2 h-2 bg-primary-600' :
+                      i + 1 === step ? 'w-3 h-3 bg-primary-600' :
+                                       'w-2 h-2 bg-gray-200 dark:bg-gray-700',
+                    ].join(' ')}
+                  />
+                ))}
+              </div>
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">Passo {step} de {totalSteps}</p>
+            </>
+          )}
         </div>
 
         {children}

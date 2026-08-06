@@ -4,7 +4,6 @@ import { type KeyboardEvent, type MouseEvent } from 'react'
 import { formatDistanceToNow, parseISO } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import type { Job } from '@/types'
-import { trackLinkedInApply } from '@/lib/extension'
 
 interface Props {
   job:       Job
@@ -26,6 +25,7 @@ const PLATFORM_META: Record<string, { label: string; badge: string }> = {
   vagas:    { label: 'Vagas.com.br', badge: 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400' },
   catho:    { label: 'Catho',     badge: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
   infojobs: { label: 'InfoJobs',  badge: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400' },
+  manual:   { label: 'Cadastro manual', badge: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300' },
 }
 
 const LEVEL_LABEL: Record<string, string> = {
@@ -38,6 +38,12 @@ const TYPE_LABEL: Record<string, string> = {
   clt:       'CLT',
   pj:        'PJ',
   freelance: 'Freelance',
+}
+
+function matchBadgeClass(score: number): string {
+  if (score >= 70) return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800'
+  if (score >= 40) return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 border border-amber-200 dark:border-amber-800'
+  return 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400 border border-gray-200 dark:border-gray-600'
 }
 
 export function JobCard({
@@ -91,9 +97,6 @@ export function JobCard({
       onMarkApplied?.(job)
       return
     }
-    if (job.easy_apply && job.platform === 'linkedin') {
-      trackLinkedInApply({ linkedinJobId: job.external_id, internalJobId: job.id })
-    }
     onView?.(job)
     window.open(job.url, '_blank', 'noopener,noreferrer')
   }
@@ -123,6 +126,14 @@ export function JobCard({
           <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5 truncate">{job.company}</p>
         </div>
         <div className="flex flex-shrink-0 flex-wrap justify-end gap-1.5">
+          {job.match_score != null && (
+            <span
+              title="Compatibilidade com seu currículo"
+              className={`px-2.5 py-1 rounded-full text-xs font-semibold ${matchBadgeClass(job.match_score)}`}
+            >
+              {job.match_score}% match
+            </span>
+          )}
           <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${platform.badge}`}>
             {platform.label}
           </span>

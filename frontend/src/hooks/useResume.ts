@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '@/lib/api'
-import { useAuthStore } from '@/store/auth.store'
-import type { AuthUser } from '@/types'
+import { useUserStore } from '@/store/user.store'
+import type { UserProfile } from '@/types'
 
 export interface Experience {
   id: number
@@ -12,16 +12,22 @@ export interface Experience {
   start_date: string | null   // YYYY-MM-DD
   end_date: string | null
   is_current: boolean
+  keywords: string[]
 }
+
+export type EducationType = 'graduacao' | 'pos' | 'tecnico' | 'curso' | 'certificado' | 'outro'
+export type EducationStatus = 'concluido' | 'cursando' | 'trancado'
 
 export interface Education {
   id: number
-  institution: string
+  institution: string | null
   degree: string | null
   field_of_study: string | null
+  education_type: EducationType
+  status: EducationStatus
+  expected_completion_date: string | null
   start_date: string | null
   end_date: string | null
-  is_current: boolean
 }
 
 export interface Skill {
@@ -36,10 +42,15 @@ export interface Language {
   proficiency: string    // basic | intermediate | advanced | fluent | native
 }
 
+export type Gender = 'feminino' | 'masculino' | 'nao_binario' | 'prefiro_nao_informar'
+
 export interface Resume {
   id: number
   title: string
   summary: string | null
+  gender: Gender | null
+  is_pcd: boolean
+  extra_keywords: string[]
   full_name: string | null
   location_preference: string | null
   desired_role: string | null
@@ -61,10 +72,10 @@ export interface ProfileUpdate {
 
 export function useUpdateProfile() {
   const qc      = useQueryClient()
-  const setUser = useAuthStore((s) => s.setUser)
+  const setUser = useUserStore((s) => s.setUser)
   return useMutation({
     mutationFn: (data: ProfileUpdate) =>
-      api.patch<AuthUser>('/api/users/profile', data).then((r) => r.data),
+      api.patch<UserProfile>('/api/users/profile', data).then((r) => r.data),
     onSuccess: (user) => {
       setUser(user)
       // Sync the new values into the cached resume object
@@ -90,9 +101,19 @@ export function useResume() {
 export function useUpdateResume() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (data: { title?: string; summary?: string }) =>
+    mutationFn: (data: { title?: string; summary?: string; gender?: Gender | null; is_pcd?: boolean; extra_keywords?: string[] }) =>
       api.patch<Resume>('/api/resume', data).then((r) => r.data),
     onSuccess: setResume(qc),
+  })
+}
+
+// ─── keywords (curated list for autocomplete / auto-detection) ───────────────
+
+export function useCuratedKeywords() {
+  return useQuery<string[]>({
+    queryKey: ['resume-keywords'],
+    queryFn:  () => api.get<{ keywords: string[] }>('/api/resume/keywords').then((r) => r.data.keywords),
+    staleTime: Infinity,
   })
 }
 

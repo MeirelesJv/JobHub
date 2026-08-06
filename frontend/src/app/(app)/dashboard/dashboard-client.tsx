@@ -1,136 +1,243 @@
 'use client'
 
-import { useQuery } from '@tanstack/react-query'
-import api from '@/lib/api'
-import type { ApplicationStats } from '@/types'
+import { useState } from 'react'
+import { formatDistanceToNow, parseISO } from 'date-fns'
+import { ptBR } from 'date-fns/locale'
+import {
+  useApplicationStats, useCreateManualApplication, useRecentApplications,
+  type ManualApplicationInput,
+} from '@/hooks/useApplications'
+import { useToast } from '@/store/toast.store'
 
-interface StatCard {
-  label:     string
-  key:       keyof ApplicationStats
-  icon:      React.ReactNode
-  bgColor:   string
-  textColor: string
-}
-
-const CARDS: StatCard[] = [
-  {
-    label: 'Total candidaturas',
-    key:   'total',
-    bgColor:   'bg-primary-50 dark:bg-primary-900/30',
-    textColor: 'text-primary-700 dark:text-primary-400',
-    icon: (
-      <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75}
-          d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-      </svg>
-    ),
-  },
-  {
-    label: 'Em análise',
-    key:   'in_review',
-    bgColor:   'bg-yellow-50 dark:bg-yellow-900/20',
-    textColor: 'text-yellow-700 dark:text-yellow-400',
-    icon: (
-      <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75}
-          d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-      </svg>
-    ),
-  },
-  {
-    label: 'Entrevistas',
-    key:   'interview',
-    bgColor:   'bg-secondary-50 dark:bg-emerald-900/20',
-    textColor: 'text-secondary-700 dark:text-emerald-400',
-    icon: (
-      <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75}
-          d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-      </svg>
-    ),
-  },
-  {
-    label: 'Ofertas',
-    key:   'offer',
-    bgColor:   'bg-emerald-50 dark:bg-emerald-900/20',
-    textColor: 'text-emerald-700 dark:text-emerald-400',
-    icon: (
-      <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75}
-          d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
-      </svg>
-    ),
-  },
+const JOB_TYPE_OPTIONS = [
+  { value: '', label: 'Não informado' },
+  { value: 'clt', label: 'CLT' },
+  { value: 'pj', label: 'PJ' },
+  { value: 'freelance', label: 'Freelance' },
 ]
 
-function SkeletonCard() {
+const LEVEL_OPTIONS = [
+  { value: '', label: 'Não informado' },
+  { value: 'junior', label: 'Júnior' },
+  { value: 'pleno', label: 'Pleno' },
+  { value: 'senior', label: 'Sênior' },
+]
+
+const EMPTY_FORM = {
+  title: '', company: '', url: '', location: '',
+  job_type: '', level: '', remote: false, notes: '',
+}
+
+function FormField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 border border-gray-100 dark:border-gray-700 animate-pulse">
-      <div className="flex items-center justify-between mb-4">
-        <div className="w-12 h-12 rounded-xl bg-gray-100 dark:bg-gray-700" />
-        <div className="w-16 h-8 rounded-lg bg-gray-100 dark:bg-gray-700" />
+    <label className="block">
+      <span className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{label}</span>
+      {children}
+    </label>
+  )
+}
+
+const inputClass = 'w-full px-3.5 py-2.5 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-sm outline-none focus:ring-2 focus:ring-primary-500'
+
+function RegisterJobCard() {
+  const toast  = useToast()
+  const create = useCreateManualApplication()
+  const [form, setForm] = useState(EMPTY_FORM)
+
+  function set<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
+    setForm((f) => ({ ...f, [key]: value }))
+  }
+
+  const canSubmit = form.title.trim() !== '' && form.company.trim() !== '' && form.url.trim() !== ''
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!canSubmit) return
+
+    const payload: ManualApplicationInput = {
+      title:    form.title.trim(),
+      company:  form.company.trim(),
+      url:      form.url.trim(),
+      location: form.location.trim() || undefined,
+      job_type: (form.job_type || undefined) as ManualApplicationInput['job_type'],
+      level:    (form.level || undefined) as ManualApplicationInput['level'],
+      remote:   form.remote,
+      notes:    form.notes.trim() || undefined,
+    }
+
+    try {
+      await create.mutateAsync(payload)
+      toast.success('Vaga cadastrada e candidatura registrada!')
+      setForm(EMPTY_FORM)
+    } catch {
+      toast.error('Erro ao cadastrar. Tente novamente.')
+    }
+  }
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 p-6">
+      <div className="flex items-center gap-3 mb-1">
+        <div className="w-10 h-10 rounded-xl bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400 flex items-center justify-center flex-shrink-0">
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+          </svg>
+        </div>
+        <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Cadastrar vaga</h2>
       </div>
-      <div className="h-4 w-32 bg-gray-100 dark:bg-gray-700 rounded" />
+      <p className="text-sm text-gray-500 dark:text-gray-400 mb-5 ml-[52px]">
+        Achou uma vaga fora do JobHub e já se candidatou? Registre aqui pra acompanhar no kanban.
+      </p>
+
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <FormField label="Cargo *">
+            <input className={inputClass} value={form.title} onChange={(e) => set('title', e.target.value)}
+              placeholder="Ex: Analista de Sistemas Júnior" required />
+          </FormField>
+          <FormField label="Empresa *">
+            <input className={inputClass} value={form.company} onChange={(e) => set('company', e.target.value)}
+              placeholder="Ex: BIB Tech" required />
+          </FormField>
+        </div>
+
+        <FormField label="Link da vaga *">
+          <input className={inputClass} type="url" value={form.url} onChange={(e) => set('url', e.target.value)}
+            placeholder="https://…" required />
+        </FormField>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <FormField label="Localização">
+            <input className={inputClass} value={form.location} onChange={(e) => set('location', e.target.value)}
+              placeholder="São Paulo, SP" />
+          </FormField>
+          <FormField label="Tipo">
+            <select className={inputClass} value={form.job_type} onChange={(e) => set('job_type', e.target.value)}>
+              {JOB_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </FormField>
+          <FormField label="Nível">
+            <select className={inputClass} value={form.level} onChange={(e) => set('level', e.target.value)}>
+              {LEVEL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </FormField>
+        </div>
+
+        <div className="flex items-center justify-between pt-1">
+          <label className="flex items-center gap-2 cursor-pointer select-none">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={form.remote}
+              onClick={() => set('remote', !form.remote)}
+              className={`relative flex-shrink-0 w-11 h-6 rounded-full transition-colors focus:outline-none overflow-hidden ${form.remote ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+            >
+              <span className={`absolute left-0 top-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${form.remote ? 'translate-x-5' : 'translate-x-0'}`} />
+            </button>
+            <span className="text-sm text-gray-700 dark:text-gray-300">Vaga remota</span>
+          </label>
+
+          <button
+            type="submit"
+            disabled={!canSubmit || create.isPending}
+            className="px-5 py-2.5 bg-primary-600 hover:bg-primary-700 disabled:bg-primary-300 dark:disabled:bg-primary-800 text-white text-sm font-semibold rounded-lg transition-colors"
+          >
+            {create.isPending ? 'Cadastrando…' : 'Cadastrar e registrar candidatura'}
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+const STATUS_LABEL: Record<string, string> = {
+  applied: 'Candidatado', in_review: 'Em análise', interview: 'Entrevista',
+  offer: 'Oferta', rejected: 'Recusada', cancelled: 'Cancelada',
+}
+const STATUS_BADGE: Record<string, string> = {
+  applied:   'bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400',
+  in_review: 'bg-yellow-50 text-yellow-700 dark:bg-yellow-900/20 dark:text-yellow-400',
+  interview: 'bg-secondary-50 text-secondary-700 dark:bg-emerald-900/20 dark:text-emerald-400',
+  offer:     'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400',
+  rejected:  'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-400',
+  cancelled: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
+}
+
+function RecentApplications() {
+  const { data, isLoading } = useRecentApplications()
+  const items = (data ?? []).slice(0, 6)
+
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Últimas candidaturas</h2>
+        <a href="/applications" className="text-sm font-medium text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300">
+          Ver kanban →
+        </a>
+      </div>
+
+      {isLoading ? (
+        <div className="space-y-3">
+          {[1, 2, 3].map((i) => <div key={i} className="h-14 bg-gray-100 dark:bg-gray-700 rounded-xl animate-pulse" />)}
+        </div>
+      ) : items.length === 0 ? (
+        <div className="text-center py-10">
+          <p className="text-gray-500 dark:text-gray-400 text-sm">Nenhuma candidatura registrada ainda.</p>
+          <p className="text-gray-400 dark:text-gray-500 text-xs mt-1">Cadastre sua primeira vaga acima ↑</p>
+        </div>
+      ) : (
+        <ul className="divide-y divide-gray-100 dark:divide-gray-700">
+          {items.map((app) => (
+            <li key={app.id} className="py-3 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{app.job.title}</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                  {app.job.company} · {formatDistanceToNow(parseISO(app.applied_at), { addSuffix: true, locale: ptBR })}
+                </p>
+              </div>
+              <span className={`flex-shrink-0 text-xs font-medium px-2.5 py-1 rounded-full ${STATUS_BADGE[app.status]}`}>
+                {STATUS_LABEL[app.status]}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function StatChip({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 px-4 py-3 flex-1 min-w-[120px]">
+      <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{value}</p>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{label}</p>
     </div>
   )
 }
 
 export default function DashboardClient() {
-  const { data: stats, isLoading, isError } = useQuery<ApplicationStats>({
-    queryKey: ['application-stats'],
-    queryFn:  async () => (await api.get('/api/applications/stats')).data,
-  })
+  const { data: stats } = useApplicationStats()
 
   return (
     <div>
-      <div className="mb-8">
+      <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Dashboard</h1>
-        <p className="text-gray-500 dark:text-gray-400 mt-1 text-sm">Visão geral das suas candidaturas</p>
+        <p className="text-gray-500 dark:text-gray-400 mt-1 text-sm">Registre as vagas que você aplicou e acompanhe tudo em um só lugar</p>
       </div>
 
-      {isError && (
-        <div className="mb-6 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-4 py-3 text-sm text-red-700 dark:text-red-400">
-          Não foi possível carregar as estatísticas. Verifique se o backend está rodando.
+      <div className="flex flex-wrap gap-3 mb-6">
+        <StatChip label="Candidaturas" value={stats?.total ?? 0} />
+        <StatChip label="Em análise"   value={stats?.in_review ?? 0} />
+        <StatChip label="Entrevistas"  value={stats?.interview ?? 0} />
+        <StatChip label="Ofertas"      value={stats?.offer ?? 0} />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
+        <div className="xl:col-span-3">
+          <RegisterJobCard />
         </div>
-      )}
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        {isLoading
-          ? Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
-          : CARDS.map(({ label, key, icon, bgColor, textColor }) => (
-              <div
-                key={key}
-                className="bg-white dark:bg-gray-800 rounded-2xl p-6 border border-gray-100 dark:border-gray-700 hover:shadow-md transition-shadow"
-              >
-                <div className="flex items-center justify-between mb-4">
-                  <div className={`w-12 h-12 rounded-xl ${bgColor} ${textColor} flex items-center justify-center`}>
-                    {icon}
-                  </div>
-                  <span className={`text-3xl font-bold ${textColor}`}>
-                    {stats?.[key] ?? 0}
-                  </span>
-                </div>
-                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">{label}</p>
-              </div>
-            ))}
-      </div>
-
-      <div className="mt-8 bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 p-6">
-        <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-4">Atividade recente</h2>
-        {!isLoading && stats?.total === 0 ? (
-          <div className="text-center py-12">
-            <svg className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-            </svg>
-            <p className="text-gray-500 dark:text-gray-400 text-sm">Nenhuma candidatura ainda.</p>
-            <a href="/jobs" className="mt-2 inline-block text-sm font-medium text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300">
-              Explorar vagas →
-            </a>
-          </div>
-        ) : (
-          <p className="text-sm text-gray-400 dark:text-gray-500 text-center py-8">Gráfico de evolução em breve</p>
-        )}
+        <div className="xl:col-span-2">
+          <RecentApplications />
+        </div>
       </div>
     </div>
   )

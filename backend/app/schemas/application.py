@@ -13,6 +13,20 @@ class ApplicationCreate(BaseModel):
     notes: Optional[str] = None
 
 
+class ManualApplicationCreate(BaseModel):
+    """Registers a job the user found and applied to outside the platform's own
+    collectors (e.g. a listing shared by a friend, or from a site we don't scrape) —
+    creates the Job and the Application together in one step."""
+    title: str
+    company: str
+    url: str
+    location: Optional[str] = None
+    job_type: Optional[JobType] = None
+    level: Optional[JobLevel] = None
+    remote: bool = False
+    notes: Optional[str] = None
+
+
 class ApplicationUpdate(BaseModel):
     status: Optional[ApplicationStatus] = None
     notes: Optional[str] = None

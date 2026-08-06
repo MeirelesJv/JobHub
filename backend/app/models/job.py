@@ -4,7 +4,7 @@ import enum
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, DateTime, Enum, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Enum, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -19,6 +19,7 @@ class JobPlatform(str, enum.Enum):
     VAGAS = "vagas"
     CATHO = "catho"
     INFOJOBS = "infojobs"
+    MANUAL = "manual"
 
 
 class JobType(str, enum.Enum):
@@ -55,6 +56,7 @@ class Job(Base):
     )
     remote: Mapped[bool] = mapped_column(Boolean, default=False)
     easy_apply: Mapped[bool] = mapped_column(Boolean, default=False)
+    match_score: Mapped[Optional[int]] = mapped_column(Integer)
     platform: Mapped[JobPlatform] = mapped_column(
         Enum(JobPlatform, values_callable=lambda x: [e.value for e in x]), nullable=False
     )

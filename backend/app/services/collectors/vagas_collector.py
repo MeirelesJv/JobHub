@@ -14,8 +14,18 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.models.job import JobLevel, JobPlatform, JobType
+from app.models.platform import Platform
 from app.services.collectors.html_utils import html_to_text
-from app.services.job_service import close_sync_log, ensure_platform, open_sync_log, save_job
+from app.services.job_service import (
+    close_sync_log,
+    compute_sync_cutoff,
+    ensure_platform,
+    get_platform_sync_anchor,
+    get_search_lookback_days,
+    open_sync_log,
+    record_structural_check,
+    save_job,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +52,6 @@ _JOB_LINK_RE = re.compile(
 )
 _TAG_RE = re.compile(r"<[^>]+>")
 _REMOTE_KEYWORDS = frozenset(["100% home office", "home office", "remoto", "remote", "hibrido"])
-_MAX_AGE = timedelta(days=30)
 _STOPWORDS = frozenset(["a", "as", "o", "os", "de", "da", "das", "do", "dos", "e", "em", "para"])
 _BROAD_ROLE_TERMS = frozenset([
     "analista", "analyst", "especialista", "specialist",
@@ -285,9 +294,15 @@ def _parse_cards(html: str) -> list[dict]:
     return jobs
 
 
-def _fetch_all_pages(keyword: str, matcher: dict) -> list[dict]:
+def _fetch_all_pages(
+    db: Session,
+    platform: Platform,
+    keyword: str,
+    matcher: dict,
+    cutoff: datetime,
+    anchor_id: str | None,
+) -> list[dict]:
     collected: dict[str, dict] = {}
-    cutoff = datetime.now(timezone.utc) - _MAX_AGE
     search_slug = _slugify_keyword(keyword)
 
     for page in range(1, MAX_PAGES + 1):
@@ -299,12 +314,23 @@ def _fetch_all_pages(keyword: str, matcher: dict) -> list[dict]:
             resp.raise_for_status()
             cards = _parse_cards(resp.text)
             logger.info("Vagas status=%d cards_parsed=%d", resp.status_code, len(cards))
+            if page == 1:
+                record_structural_check(
+                    db, platform, ok=bool(cards), step="listagem (regex de card no HTML)",
+                    detail=None if cards else f"HTTP {resp.status_code} OK, 0 cards extraídos pelo regex de listagem",
+                )
         except Exception as exc:
             logger.warning("Vagas fetch error page=%d kw=%s: %s", page, keyword, exc)
             break
 
         if not cards:
             break
+
+        anchor_found = anchor_id is not None and any(j["external_id"] == anchor_id for j in cards)
+        cutoff_reached = any(
+            j["published_at"] is not None and j["published_at"] < cutoff
+            for j in cards
+        )
 
         recent = [
             job for job in cards
@@ -319,6 +345,12 @@ def _fetch_all_pages(keyword: str, matcher: dict) -> list[dict]:
         if len(cards) < PAGE_SIZE or not recent:
             break
         if len(recent) > 0 and len(matched) / len(recent) < 0.5:
+            break
+        if cutoff_reached:
+            logger.info("Vagas: cutoff %s atingido na página %d — encerrando paginação", cutoff.date(), page)
+            break
+        if anchor_found:
+            logger.info("Vagas: anchor %s encontrado na página %d — encerrando paginação", anchor_id, page)
             break
 
         if page < MAX_PAGES:
@@ -348,12 +380,14 @@ def collect(
     platform = ensure_platform(db, PLATFORM_NAME, PLATFORM_SLUG)
     log = open_sync_log(db, platform, user_id)
     matcher = _build_keyword_matcher(keyword)
+    latest_date, anchor_id = get_platform_sync_anchor(db, JobPlatform.VAGAS, keyword)
+    cutoff = compute_sync_cutoff(latest_date, max_days=get_search_lookback_days(db))
 
     jobs_found = 0
     jobs_new = 0
     try:
         candidates = [
-            job for job in _fetch_all_pages(keyword, matcher)
+            job for job in _fetch_all_pages(db, platform, keyword, matcher, cutoff, anchor_id)
             if city is None or _should_keep_location(job, city)
         ]
 

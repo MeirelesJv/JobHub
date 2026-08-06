@@ -12,13 +12,16 @@ from html import unescape
 from sqlalchemy.orm import Session
 
 from app.models.job import JobLevel, JobPlatform, JobType
+from app.models.platform import Platform
 from app.services.collectors.vagas_collector import _build_keyword_matcher, _title_matches
 from app.services.job_service import (
     close_sync_log,
     compute_sync_cutoff,
     ensure_platform,
     get_platform_sync_anchor,
+    get_search_lookback_days,
     open_sync_log,
+    record_structural_check,
     save_job,
 )
 
@@ -297,6 +300,8 @@ def _parse_cards(html: str) -> list[dict]:
 
 
 def _fetch_all_pages(
+    db: Session,
+    platform: Platform,
     keyword: str,
     city: str | None,
     matcher: dict,
@@ -323,6 +328,11 @@ def _fetch_all_pages(
             time.sleep(0.5)
 
         logger.info("Catho page=%d cards=%d", page, len(cards))
+        if page == 1:
+            record_structural_check(
+                db, platform, ok=bool(cards), step="listagem (JSON __NEXT_DATA__ / HTML legado)",
+                detail=None if cards else "resposta obtida mas 0 cards nos parsers __NEXT_DATA__ e legado",
+            )
 
         if not cards:
             break
@@ -363,14 +373,14 @@ def collect(
     platform = ensure_platform(db, PLATFORM_NAME, PLATFORM_SLUG)
     log = open_sync_log(db, platform, user_id)
     latest_date, anchor_id = get_platform_sync_anchor(db, JobPlatform.CATHO, keyword)
-    cutoff = compute_sync_cutoff(latest_date)
+    cutoff = compute_sync_cutoff(latest_date, max_days=get_search_lookback_days(db))
     matcher = _build_keyword_matcher(keyword)
 
     jobs_found = 0
     jobs_new = 0
     try:
         candidates = [
-            job for job in _fetch_all_pages(keyword, city, matcher, cutoff, anchor_id)
+            job for job in _fetch_all_pages(db, platform, keyword, city, matcher, cutoff, anchor_id)
             if city is None or _should_keep_location(job, city)
         ]
 

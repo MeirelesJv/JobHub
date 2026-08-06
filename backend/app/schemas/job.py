@@ -22,6 +22,7 @@ class JobResponse(BaseModel):
     level: Optional[JobLevel]
     remote: bool
     easy_apply: bool
+    match_score: Optional[int] = None
     platform: JobPlatform
     url: str
     published_at: Optional[datetime]

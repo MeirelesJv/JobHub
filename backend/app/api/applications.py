@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.core.security import get_current_user
+from app.core.deps import get_current_user
 from app.database import get_db
 from app.models.application import ApplicationStatus
 from app.models.job import JobPlatform
@@ -12,6 +12,7 @@ from app.schemas.application import (
     ApplicationStats,
     ApplicationUpdate,
     KanbanResponse,
+    ManualApplicationCreate,
     StatusUpdate,
 )
 from app.services import application_service
@@ -26,6 +27,15 @@ def create_application(
     current_user: User = Depends(get_current_user),
 ):
     return application_service.create_application(db, current_user.id, data)
+
+
+@router.post("/manual", response_model=ApplicationResponse, status_code=201)
+def create_manual_application(
+    data: ManualApplicationCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return application_service.create_manual_application(db, current_user.id, data)
 
 
 @router.get("/kanban", response_model=KanbanResponse)

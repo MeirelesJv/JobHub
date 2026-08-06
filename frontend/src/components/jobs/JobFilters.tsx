@@ -7,11 +7,12 @@ import type { DesiredRole } from '@/hooks/useDesiredRoles'
 interface Props {
   filters:   JobFilters
   desiredRoles?: DesiredRole[]
+  enabledPlatforms?: JobPlatform[]
   onChange:  (f: JobFilters) => void
   onClose?:  () => void
 }
 
-const PLATFORMS: { value: JobPlatform; label: string }[] = [
+const ALL_PLATFORMS: { value: JobPlatform; label: string }[] = [
   { value: 'linkedin', label: 'LinkedIn'  },
   { value: 'gupy',     label: 'Gupy'      },
   { value: 'vagas',    label: 'Vagas.com.br' },
@@ -39,8 +40,11 @@ function hasActiveFilters(f: JobFilters) {
   return f.q || f.desired_roles.length || f.platforms.length || f.levels.length || f.job_types.length || f.remote !== null
 }
 
-export function JobFilters({ filters, desiredRoles = [], onChange, onClose }: Props) {
+export function JobFilters({ filters, desiredRoles = [], enabledPlatforms, onChange, onClose }: Props) {
   const set = (partial: Partial<JobFilters>) => onChange({ ...filters, ...partial })
+  const PLATFORMS = enabledPlatforms
+    ? ALL_PLATFORMS.filter((p) => enabledPlatforms.includes(p.value))
+    : ALL_PLATFORMS
 
   return (
     <div className="flex flex-col h-full">

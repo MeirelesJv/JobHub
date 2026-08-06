@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.core.security import get_current_user
+from app.core.deps import get_current_user
 from app.database import get_db
 from app.models.user import User
 from app.schemas.resume import (
@@ -15,6 +15,13 @@ from app.schemas.resume import (
 from app.services import resume_service
 
 router = APIRouter()
+
+
+@router.get("/keywords")
+def list_keywords(_: User = Depends(get_current_user)):
+    from app.services.keywords import CURATED_KEYWORDS
+
+    return {"keywords": CURATED_KEYWORDS}
 
 
 @router.get("", response_model=ResumeResponse)

@@ -1,4 +1,4 @@
-export interface AuthUser {
+export interface UserProfile {
   id: number
   email: string
   full_name: string
@@ -7,21 +7,17 @@ export interface AuthUser {
   desired_role?: string | null
   location_preference?: string | null
   job_type_preference?: string | null
-  level_preference?: string | null
   remote_preference?: boolean
-  salary_expectation_min?: number | null
   blocked_companies?: string[]
+  enabled_platforms?: JobPlatform[]
+  auto_sync_platforms?: JobPlatform[]
+  sync_interval_minutes?: number
+  search_lookback_days?: number
   onboarding_completed?: boolean
   created_at: string
 }
 
-export interface TokenResponse {
-  access_token: string
-  refresh_token: string
-  token_type: string
-}
-
-export type JobPlatform = 'linkedin' | 'gupy' | 'vagas' | 'catho' | 'infojobs'
+export type JobPlatform = 'linkedin' | 'gupy' | 'vagas' | 'catho' | 'infojobs' | 'manual'
 export type JobType    = 'clt' | 'pj' | 'freelance'
 export type JobLevel   = 'junior' | 'pleno' | 'senior'
 
@@ -38,6 +34,7 @@ export interface Job {
   level?: JobLevel | null
   remote: boolean
   easy_apply: boolean
+  match_score?: number | null
   platform: JobPlatform
   url: string
   published_at?: string | null

@@ -8,9 +8,19 @@ import {
   useDeleteRole,
   useSetPrimaryRole,
   type DesiredRole,
+  type DesiredRoleLevel,
 } from '@/hooks/useDesiredRoles'
 
 const MAX_ROLES = 5
+
+const LEVEL_OPTIONS: { value: DesiredRoleLevel | ''; label: string }[] = [
+  { value: '',       label: 'Nível não especificado' },
+  { value: 'junior', label: 'Júnior' },
+  { value: 'pleno',  label: 'Pleno'  },
+  { value: 'senior', label: 'Sênior' },
+]
+
+const LEVEL_LABEL: Record<string, string> = { junior: 'Júnior', pleno: 'Pleno', senior: 'Sênior' }
 
 export function DesiredRolesSettings() {
   const { data: roles = [], isLoading } = useDesiredRoles()
@@ -21,18 +31,22 @@ export function DesiredRolesSettings() {
 
   const [adding, setAdding]       = useState(false)
   const [newName, setNewName]     = useState('')
+  const [newLevel, setNewLevel]   = useState<DesiredRoleLevel | ''>('')
   const [editId, setEditId]       = useState<number | null>(null)
   const [editName, setEditName]   = useState('')
+  const [editLevel, setEditLevel] = useState<DesiredRoleLevel | ''>('')
 
   function startAdd() {
     setAdding(true)
     setNewName('')
+    setNewLevel('')
     setEditId(null)
   }
 
   function cancelAdd() {
     setAdding(false)
     setNewName('')
+    setNewLevel('')
   }
 
   function submitAdd(e: React.FormEvent) {
@@ -40,20 +54,22 @@ export function DesiredRolesSettings() {
     const name = newName.trim()
     if (!name) return
     addRole.mutate(
-      { role_name: name, is_primary: roles.length === 0 },
-      { onSuccess: () => { setAdding(false); setNewName('') } }
+      { role_name: name, level: newLevel || null, is_primary: roles.length === 0 },
+      { onSuccess: () => { setAdding(false); setNewName(''); setNewLevel('') } }
     )
   }
 
   function startEdit(role: DesiredRole) {
     setEditId(role.id)
     setEditName(role.role_name)
+    setEditLevel(role.level ?? '')
     setAdding(false)
   }
 
   function cancelEdit() {
     setEditId(null)
     setEditName('')
+    setEditLevel('')
   }
 
   function submitEdit(e: React.FormEvent, id: number) {
@@ -61,8 +77,8 @@ export function DesiredRolesSettings() {
     const name = editName.trim()
     if (!name) return
     updateRole.mutate(
-      { id, role_name: name },
-      { onSuccess: () => { setEditId(null); setEditName('') } }
+      { id, role_name: name, level: editLevel || null },
+      { onSuccess: () => { setEditId(null); setEditName(''); setEditLevel('') } }
     )
   }
 
@@ -93,15 +109,22 @@ export function DesiredRolesSettings() {
       {roles.map((role) => (
         <div key={role.id} className="border border-gray-200 dark:border-gray-600 rounded-xl overflow-hidden">
           {editId === role.id ? (
-            <form onSubmit={(e) => submitEdit(e, role.id)} className="flex gap-2 p-3">
+            <form onSubmit={(e) => submitEdit(e, role.id)} className="flex flex-wrap gap-2 p-3">
               <input
                 autoFocus
                 type="text"
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
-                className="flex-1 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 text-sm outline-none focus:ring-2 focus:ring-primary-500"
+                className="flex-1 min-w-[140px] px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 text-sm outline-none focus:ring-2 focus:ring-primary-500"
                 placeholder="Nome do cargo"
               />
+              <select
+                value={editLevel}
+                onChange={(e) => setEditLevel(e.target.value as DesiredRoleLevel | '')}
+                className="px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 text-sm outline-none focus:ring-2 focus:ring-primary-500"
+              >
+                {LEVEL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
               <button
                 type="submit"
                 disabled={updateRole.isPending || !editName.trim()}
@@ -120,8 +143,13 @@ export function DesiredRolesSettings() {
           ) : (
             <div className="flex items-center gap-3 px-4 py-3">
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{role.role_name}</span>
+                  {role.level && (
+                    <span className="flex-shrink-0 text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 px-2 py-0.5 rounded-full">
+                      {LEVEL_LABEL[role.level]}
+                    </span>
+                  )}
                   {role.is_primary && (
                     <span className="flex-shrink-0 text-xs font-medium bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">
                       Principal
@@ -167,15 +195,22 @@ export function DesiredRolesSettings() {
       ))}
 
       {adding ? (
-        <form onSubmit={submitAdd} className="flex gap-2 border border-primary-200 dark:border-primary-700 bg-primary-50 dark:bg-primary-900/20 rounded-xl p-3">
+        <form onSubmit={submitAdd} className="flex flex-wrap gap-2 border border-primary-200 dark:border-primary-700 bg-primary-50 dark:bg-primary-900/20 rounded-xl p-3">
           <input
             autoFocus
             type="text"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
-            className="flex-1 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 text-sm outline-none focus:ring-2 focus:ring-primary-500 bg-white"
+            className="flex-1 min-w-[140px] px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 text-sm outline-none focus:ring-2 focus:ring-primary-500 bg-white"
             placeholder="Ex: Desenvolvedor Full Stack"
           />
+          <select
+            value={newLevel}
+            onChange={(e) => setNewLevel(e.target.value as DesiredRoleLevel | '')}
+            className="px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 text-sm outline-none focus:ring-2 focus:ring-primary-500 bg-white"
+          >
+            {LEVEL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
           <button
             type="submit"
             disabled={addRole.isPending || !newName.trim()}

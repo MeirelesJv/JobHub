@@ -3,9 +3,9 @@
 import { useState, useEffect } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import api from '@/lib/api'
-import { useAuthStore } from '@/store/auth.store'
+import { useUserStore } from '@/store/user.store'
 import { useToast } from '@/store/toast.store'
-import type { AuthUser } from '@/types'
+import type { UserProfile } from '@/types'
 
 const LOCATION_OPTIONS = [
   { value: 'São Paulo, SP',        label: 'São Paulo, SP'           },
@@ -24,8 +24,8 @@ const LOCATION_OPTIONS = [
 
 export function LocationSettings() {
   const toast   = useToast()
-  const user    = useAuthStore((s) => s.user)
-  const setUser = useAuthStore((s) => s.setUser)
+  const user    = useUserStore((s) => s.user)
+  const setUser = useUserStore((s) => s.setUser)
 
   const [locationSel,  setLocationSel]  = useState('')
   const [locationText, setLocationText] = useState('')
@@ -48,7 +48,7 @@ export function LocationSettings() {
 
   const save = useMutation({
     mutationFn: () =>
-      api.patch<AuthUser>('/api/users/profile', {
+      api.patch<UserProfile>('/api/users/profile', {
         location_preference: effectiveLocation || null,
         remote_preference: remote,
       }).then((r) => r.data),

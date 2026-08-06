@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.security import get_current_user
+from app.core.deps import get_current_user
 from app.database import get_db
 from app.models.job import Job, JobLevel, JobPlatform, JobType
 from app.models.platform import Platform
@@ -95,7 +95,19 @@ def delete_all_jobs(
 @router.get("/platforms")
 def list_platforms(db: Session = Depends(get_db)):
     platforms = db.query(Platform).filter(Platform.is_active.is_(True)).all()
-    return [{"id": p.id, "name": p.name, "slug": p.slug, "last_sync_at": p.last_sync_at} for p in platforms]
+    return [
+        {
+            "id": p.id,
+            "name": p.name,
+            "slug": p.slug,
+            "last_sync_at": p.last_sync_at,
+            "is_healthy": p.is_healthy,
+            "broken_step": p.broken_step,
+            "broken_detail": p.broken_detail,
+            "broken_since": p.broken_since,
+        }
+        for p in platforms
+    ]
 
 
 @router.post("/sync", status_code=202)
@@ -110,8 +122,13 @@ def trigger_sync(
 
     redis_client = _redis.from_url(settings.REDIS_URL)
 
+    # Explicit platforms in the request win; otherwise respect the user's enabled platforms
+    platforms = body.platforms if body.platforms is not None else current_user.enabled_platforms
+    if not platforms:
+        return {"status": "skipped", "message": "Nenhuma plataforma habilitada em Configurações"}
+
     # Include platforms in lock key so "catho only" and "all" don't share a slot
-    platforms_key = ",".join(sorted(body.platforms)) if body.platforms else "all"
+    platforms_key = ",".join(sorted(platforms))
     lock_key = f"sync_task_user:{current_user.id}:{platforms_key}"
 
     existing_task_id = redis_client.get(lock_key)
@@ -122,9 +139,9 @@ def trigger_sync(
             return {"status": "started", "task_id": existing_task_id}
 
     if current_user.location_preference and not body.locations:
-        task = sync_jobs_for_user.delay(user_id=current_user.id, platforms=body.platforms)
+        task = sync_jobs_for_user.delay(user_id=current_user.id, platforms=platforms)
     else:
-        task = sync_all_jobs.delay(locations=body.locations, keywords=body.keywords)
+        task = sync_all_jobs.delay(locations=body.locations, keywords=body.keywords, platforms=platforms)
 
     redis_client.setex(lock_key, 1800, task.id)
     return {"status": "started", "task_id": task.id}

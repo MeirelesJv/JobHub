@@ -15,13 +15,16 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.models.job import JobLevel, JobPlatform, JobType
+from app.models.platform import Platform
 from app.services.collectors.html_utils import html_to_text
 from app.services.job_service import (
     close_sync_log,
     compute_sync_cutoff,
     ensure_platform,
     get_platform_sync_anchor,
+    get_search_lookback_days,
     open_sync_log,
+    record_structural_check,
     save_job,
 )
 
@@ -418,17 +421,19 @@ def _detail_fields(url: str) -> dict:
     return fields
 
 
-def _fetch_page(url: str, page: int) -> list[dict]:
+def _fetch_page(url: str, page: int) -> tuple[list[dict], int]:
     params = {"Page": page} if page > 1 else None
     logger.info("InfoJobs GET %s page=%d", url, page)
     resp = httpx.get(url, params=params, headers=HEADERS, timeout=12, follow_redirects=True)
     resp.raise_for_status()
     cards = _parse_cards(resp.text)
     logger.info("InfoJobs status=%d cards_parsed=%d", resp.status_code, len(cards))
-    return cards
+    return cards, resp.status_code
 
 
 def _fetch_all_pages(
+    db: Session,
+    platform: Platform,
     keyword: str,
     city: str | None,
     expanded: frozenset[str],
@@ -440,7 +445,12 @@ def _fetch_all_pages(
 
     for page in range(1, MAX_PAGES + 1):
         try:
-            cards = _fetch_page(url, page)
+            cards, status_code = _fetch_page(url, page)
+            if page == 1:
+                record_structural_check(
+                    db, platform, ok=bool(cards), step="listagem (regex de card no HTML)",
+                    detail=None if cards else f"HTTP {status_code} OK, 0 cards extraídos pelo regex de listagem",
+                )
         except Exception as exc:
             logger.warning("InfoJobs fetch error page=%d kw=%s city=%s: %s", page, keyword, city, exc)
             break
@@ -511,13 +521,13 @@ def collect(
     platform = ensure_platform(db, PLATFORM_NAME, PLATFORM_SLUG)
     log = open_sync_log(db, platform, user_id)
     latest_date, anchor_id = get_platform_sync_anchor(db, JobPlatform.INFOJOBS, keyword)
-    cutoff = compute_sync_cutoff(latest_date)
+    cutoff = compute_sync_cutoff(latest_date, max_days=get_search_lookback_days(db))
     expanded = _expand_keyword(keyword)
 
     jobs_found = 0
     jobs_new = 0
     try:
-        raw_candidates = _fetch_all_pages(keyword, city, expanded, cutoff, anchor_id)
+        raw_candidates = _fetch_all_pages(db, platform, keyword, city, expanded, cutoff, anchor_id)
 
         if city is None:
             candidates = raw_candidates

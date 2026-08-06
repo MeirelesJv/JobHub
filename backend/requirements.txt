@@ -12,10 +12,6 @@ psycopg2-binary==2.9.9
 redis==5.0.4
 celery==5.4.0
 
-# Autenticação
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-
 # Validação
 pydantic==2.7.1
 pydantic-settings==2.2.1

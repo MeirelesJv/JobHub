@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '@/lib/api'
+import { useToast } from '@/store/toast.store'
 import type { Job, JobListResponse, JobPlatform, JobType, JobLevel } from '@/types'
 
 const PAGE_SIZE = 20
 
-export type SortBy = 'date_desc' | 'date_asc' | 'title_asc' | 'platform_asc'
+export type SortBy = 'date_desc' | 'date_asc' | 'title_asc' | 'platform_asc' | 'match_desc'
 
 export interface JobFilters {
   q:         string
@@ -109,6 +110,7 @@ function clearPersistedSync() {
 
 export function useSyncJobs() {
   const qc = useQueryClient()
+  const toast = useToast()
   const [taskId,   setTaskId]   = useState<string | null>(null)
   const [syncing,  setSyncing]  = useState(false)
   const [startedAt, setStartedAt] = useState<number | null>(null)
@@ -163,7 +165,13 @@ export function useSyncJobs() {
     setStartedAt(nextStartedAt)
     try {
       const body = platform ? { platforms: [platform] } : {}
-      const { data } = await api.post<{ task_id: string }>('/api/jobs/sync', body)
+      const { data } = await api.post<{ status: string; task_id?: string; message?: string }>('/api/jobs/sync', body)
+      if (data.status === 'skipped' || !data.task_id) {
+        toast.error(data.message ?? 'Nenhuma plataforma habilitada em Configurações')
+        setSyncing(false)
+        setStartedAt(null)
+        return
+      }
       setTaskId(data.task_id)
       persistSync({ taskId: data.task_id, startedAt: nextStartedAt })
     } catch {

@@ -19,9 +19,9 @@ celery_app.conf.update(
     task_track_started=True,
     worker_prefetch_multiplier=1,
     beat_schedule={
-        "sync-all-jobs-every-2h": {
-            "task": "app.workers.tasks.sync_all_jobs",
-            "schedule": crontab(minute=0, hour="*/2"),
+        "check-scheduled-sync": {
+            "task": "app.workers.tasks.maybe_run_scheduled_sync",
+            "schedule": crontab(minute="*/10"),
         },
         "cleanup-expired-jobs-daily": {
             "task": "app.workers.tasks.cleanup_expired_jobs",

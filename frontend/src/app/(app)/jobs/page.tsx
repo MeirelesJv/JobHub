@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useCallback, useEffect, useRef } from 'react'
+import Link from 'next/link'
 import { JobCard, JobCardSkeleton } from '@/components/jobs/JobCard'
 import { JobFilters } from '@/components/jobs/JobFilters'
 import { JobDetail } from '@/components/jobs/JobDetail'
@@ -11,8 +12,8 @@ import { useViewedJobs } from '@/hooks/useViewedJobs'
 import { useDismissedNewJobs } from '@/hooks/useDismissedNewJobs'
 import { useDesiredRoles } from '@/hooks/useDesiredRoles'
 import { useToast } from '@/store/toast.store'
-import { useAuthStore } from '@/store/auth.store'
-import type { Job } from '@/types'
+import { useUserStore } from '@/store/user.store'
+import type { Job, JobPlatform } from '@/types'
 
 type JobsTab = 'all' | 'new' | 'applied'
 
@@ -22,7 +23,7 @@ function isNewJob(job: Job): boolean {
 
 export default function JobsPage() {
   const toast = useToast()
-  const user  = useAuthStore((s) => s.user)
+  const user  = useUserStore((s) => s.user)
 
   const [filters, setFilters]         = useState<Filters>(defaultFilters)
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
@@ -130,13 +131,15 @@ export default function JobsPage() {
     return () => document.removeEventListener('mousedown', handler)
   }, [syncMenuOpen])
 
-  const PLATFORMS = [
+  const ALL_PLATFORMS: { slug: JobPlatform; label: string }[] = [
     { slug: 'linkedin',  label: 'LinkedIn' },
     { slug: 'gupy',      label: 'Gupy' },
     { slug: 'vagas',     label: 'Vagas.com.br' },
     { slug: 'infojobs',  label: 'InfoJobs' },
     { slug: 'catho',     label: 'Catho' },
   ]
+  const enabledPlatforms = user?.enabled_platforms ?? ALL_PLATFORMS.map((p) => p.slug)
+  const PLATFORMS = ALL_PLATFORMS.filter((p) => enabledPlatforms.includes(p.slug))
 
   return (
     <div className="flex h-full gap-0">
@@ -161,6 +164,7 @@ export default function JobsPage() {
         <JobFilters
           filters={filters}
           desiredRoles={desiredRoles}
+          enabledPlatforms={enabledPlatforms}
           onChange={handleFiltersChange}
           onClose={() => setMobileFiltersOpen(false)}
         />
@@ -192,9 +196,9 @@ export default function JobsPage() {
               </strong>{' '}
               em <strong>{user.location_preference}</strong> + remotas
             </span>
-            <a href="/settings" className="flex-shrink-0 text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 font-medium underline underline-offset-2">
+            <Link href="/resume?tab=preferencias" className="flex-shrink-0 text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 font-medium underline underline-offset-2">
               Alterar
-            </a>
+            </Link>
           </div>
         )}
 
@@ -217,6 +221,7 @@ export default function JobsPage() {
               onChange={(e) => setFilters((f) => ({ ...f, sort_by: e.target.value as SortBy }))}
               className="px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm text-gray-600 dark:text-gray-300 outline-none focus:ring-2 focus:ring-primary-500 cursor-pointer"
             >
+              <option value="match_desc">Melhor match</option>
               <option value="date_desc">Mais recentes</option>
               <option value="date_asc">Mais antigas</option>
               <option value="title_asc">Título (A → Z)</option>

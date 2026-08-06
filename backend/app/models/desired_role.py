@@ -20,6 +20,8 @@ class UserDesiredRole(Base):
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     role_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # junior | pleno | senior — usado no match de vagas
+    level: Mapped[str | None] = mapped_column(String(50))
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(

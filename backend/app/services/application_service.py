@@ -1,14 +1,18 @@
+import uuid
+from datetime import datetime, timezone
+
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from fastapi import HTTPException
 
-from app.models.application import Application, ApplicationStatus
-from app.models.job import Job
+from app.models.application import Application, ApplicationMode, ApplicationStatus
+from app.models.job import Job, JobPlatform
 from app.schemas.application import (
     ApplicationCreate,
     ApplicationStats,
     KanbanResponse,
+    ManualApplicationCreate,
 )
 
 
@@ -49,6 +53,44 @@ def create_application(db: Session, user_id: int, data: ApplicationCreate) -> Ap
     db.commit()
     db.refresh(application)
     # reload with job relationship eager-loaded
+    return _get_or_404(db, user_id, application.id)
+
+
+def create_manual_application(db: Session, user_id: int, data: ManualApplicationCreate) -> Application:
+    from app.services.job_service import _get_match_profile, compute_match_score
+
+    job_data = {
+        "external_id": str(uuid.uuid4()),
+        "platform": JobPlatform.MANUAL,
+        "title": data.title,
+        "company": data.company,
+        "url": data.url,
+        "location": data.location,
+        "job_type": data.job_type,
+        "level": data.level,
+        "remote": data.remote,
+        "is_active": True,
+        "published_at": datetime.now(timezone.utc),
+    }
+
+    profile = _get_match_profile(db)
+    if profile is not None:
+        job_data["match_score"] = compute_match_score(job_data, profile)
+
+    job = Job(**job_data)
+    db.add(job)
+    db.flush()
+
+    application = Application(
+        user_id=user_id,
+        job_id=job.id,
+        mode=ApplicationMode.MANUAL,
+        status=ApplicationStatus.APPLIED,
+        notes=data.notes,
+    )
+    db.add(application)
+    db.commit()
+    db.refresh(application)
     return _get_or_404(db, user_id, application.id)
 
 

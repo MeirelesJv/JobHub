@@ -23,13 +23,16 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 from sqlalchemy.orm import Session
 
 from app.models.job import JobLevel, JobPlatform
+from app.models.platform import Platform
 from app.services.collectors.html_utils import format_gupy_description
 from app.services.job_service import (
     close_sync_log,
     compute_sync_cutoff,
     ensure_platform,
     get_platform_sync_anchor,
+    get_search_lookback_days,
     open_sync_log,
+    record_structural_check,
     save_job,
 )
 
@@ -40,7 +43,6 @@ PLATFORM_SLUG = "gupy"
 PORTAL_BASE   = "https://portal.gupy.io"
 PORTAL_API_BASE = "https://employability-portal.gupy.io"
 MAX_SCROLL_PAGES = 2   # scrolls adicionais após a 1ª carga (total: 3 páginas)
-_MAX_AGE = timedelta(days=30)
 _API_PAGE_LIMIT = 100
 
 _VIEWPORTS = [
@@ -304,7 +306,7 @@ def _deactivate_stale_jobs(db: Session) -> None:
     from sqlalchemy import or_
 
     now = datetime.now(timezone.utc)
-    cutoff = now - _MAX_AGE
+    cutoff = now - timedelta(days=get_search_lookback_days(db))
     stale_count = (
         db.query(Job)
         .filter(
@@ -323,6 +325,8 @@ def _deactivate_stale_jobs(db: Session) -> None:
 
 
 def _fetch_keyword_via_api(
+    db: Session,
+    platform: Platform,
     keyword: str,
     state: str | None,
     expanded: frozenset[str],
@@ -355,6 +359,8 @@ def _fetch_keyword_via_api(
         if not batch:
             break
         api_loaded = True
+        if page_n == 0:
+            record_structural_check(db, platform, ok=True, step="API interna (employability-portal)")
 
         added = 0
         anchor_found = False
@@ -390,6 +396,8 @@ def _fetch_keyword_via_api(
 
 
 def _fetch_keyword_in_browser(
+    db: Session,
+    platform: Platform,
     browser,
     keyword: str,
     state: str | None,
@@ -401,7 +409,7 @@ def _fetch_keyword_in_browser(
     Usa um browser aberto para interceptar a API de vagas,
     paginar via scroll e retornar vagas que batem no keyword/localizacao.
     """
-    api_jobs, api_loaded = _fetch_keyword_via_api(keyword, state, expanded, cutoff, anchor_id)
+    api_jobs, api_loaded = _fetch_keyword_via_api(db, platform, keyword, state, expanded, cutoff, anchor_id)
     if api_loaded:
         return api_jobs
 
@@ -476,6 +484,9 @@ def _fetch_keyword_in_browser(
         initial, anchor_found, cutoff_reached = _drain_pending()
         logger.info("Gupy: %d vagas na carga inicial", initial)
 
+        if initial:
+            record_structural_check(db, platform, ok=True, step="interceptação da API interna (Playwright)")
+
         if anchor_found:
             logger.info("Gupy: anchor %s encontrado na carga inicial — encerrando paginação", anchor_id)
             return list(collected.values())
@@ -486,6 +497,10 @@ def _fetch_keyword_in_browser(
         if not initial:
             # Página pode ter retornado erro ou CAPTCHA — abandona
             logger.warning("Gupy: nenhuma vaga interceptada — possível bloqueio")
+            record_structural_check(
+                db, platform, ok=False, step="interceptação da API interna (Playwright)",
+                detail="Página carregou mas nenhuma resposta JSON de vagas foi interceptada — possível CAPTCHA/bloqueio ou mudança na API",
+            )
             return []
 
         # ── Paginação via scroll ─────────────────────────────────────────────
@@ -543,6 +558,7 @@ def collect_batch(
         _deactivate_stale_jobs(db)
 
         all_jobs: dict[str, dict] = {}
+        lookback_days = get_search_lookback_days(db)
 
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True, args=_BROWSER_ARGS)
@@ -550,8 +566,8 @@ def collect_batch(
                 for idx, keyword in enumerate(keywords):
                     expanded = _expand_keyword(keyword)
                     latest_date, anchor_id = get_platform_sync_anchor(db, JobPlatform.GUPY, keyword)
-                    cutoff = compute_sync_cutoff(latest_date)
-                    for job in _fetch_keyword_in_browser(browser, keyword, state, expanded, cutoff, anchor_id):
+                    cutoff = compute_sync_cutoff(latest_date, max_days=lookback_days)
+                    for job in _fetch_keyword_in_browser(db, platform, browser, keyword, state, expanded, cutoff, anchor_id):
                         existing = all_jobs.get(job["external_id"])
                         if existing:
                             if job.get("remote"):

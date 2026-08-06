@@ -18,6 +18,7 @@ const PLATFORM_BADGE: Record<string, string> = {
   vagas:    'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400',
   catho:    'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400',
   infojobs: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
+  manual:   'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
 }
 
 const PLATFORM_LABEL: Record<string, string> = {
@@ -26,6 +27,7 @@ const PLATFORM_LABEL: Record<string, string> = {
   vagas:    'Vagas.com.br',
   catho:    'Catho',
   infojobs: 'InfoJobs',
+  manual:   'Cadastro manual',
 }
 
 export function KanbanCard({ application, onDelete, isDragOverlay = false }: Props) {

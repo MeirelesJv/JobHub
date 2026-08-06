@@ -19,10 +19,17 @@ const PLATFORM_META: Record<string, { label: string; badge: string }> = {
   vagas:    { label: 'Vagas.com.br', badge: 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400' },
   catho:    { label: 'Catho',     badge: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
   infojobs: { label: 'InfoJobs',  badge: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400' },
+  manual:   { label: 'Cadastro manual', badge: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300' },
 }
 
 const LEVEL_LABEL: Record<string, string> = { junior: 'Júnior', pleno: 'Pleno', senior: 'Sênior' }
 const TYPE_LABEL:  Record<string, string>  = { clt: 'CLT', pj: 'PJ', freelance: 'Freelance' }
+
+function matchBadgeClass(score: number): string {
+  if (score >= 70) return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+  if (score >= 40) return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
+  return 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
+}
 
 export function JobDetail({ job, onClose, onMarkApplied, applied = false, applying = false }: Props) {
   useEffect(() => {
@@ -67,6 +74,14 @@ export function JobDetail({ job, onClose, onMarkApplied, applied = false, applyi
         <div className="flex items-start gap-4 p-6 border-b border-gray-100 dark:border-gray-700">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap mb-1">
+              {job.match_score != null && (
+                <span
+                  title="Compatibilidade com seu currículo"
+                  className={`px-2.5 py-1 rounded-full text-xs font-semibold ${matchBadgeClass(job.match_score)}`}
+                >
+                  {job.match_score}% match
+                </span>
+              )}
               <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${platform.badge}`}>
                 {platform.label}
               </span>

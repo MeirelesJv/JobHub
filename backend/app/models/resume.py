@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -19,6 +19,11 @@ class Resume(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     summary: Mapped[Optional[str]] = mapped_column(Text)
+    gender: Mapped[Optional[str]] = mapped_column(String(50))
+    is_pcd: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # extra keywords pasted in by the user (e.g. extracted from the resume by an
+    # external AI) — feed into job match scoring alongside skills/experience keywords
+    extra_keywords: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -53,6 +58,8 @@ class ResumeExperience(Base):
     end_date: Mapped[Optional[date]] = mapped_column(Date)
     is_current: Mapped[bool] = mapped_column(Boolean, default=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
+    # keywords tagged (auto-detected or manual) — feed into job match scoring
+    keywords: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     order: Mapped[int] = mapped_column(Integer, default=0)
 
     resume: Mapped[Resume] = relationship(back_populates="experiences")
@@ -63,12 +70,16 @@ class ResumeEducation(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     resume_id: Mapped[int] = mapped_column(ForeignKey("resumes.id", ondelete="CASCADE"))
-    institution: Mapped[str] = mapped_column(String(255), nullable=False)
+    institution: Mapped[Optional[str]] = mapped_column(String(255))
     degree: Mapped[Optional[str]] = mapped_column(String(255))
     field_of_study: Mapped[Optional[str]] = mapped_column(String(255))
+    # graduacao | pos | tecnico | curso | certificado | outro
+    education_type: Mapped[str] = mapped_column(String(50), default="graduacao", server_default="graduacao")
+    # concluido | cursando | trancado
+    status: Mapped[str] = mapped_column(String(50), default="concluido", server_default="concluido")
+    expected_completion_date: Mapped[Optional[date]] = mapped_column(Date)
     start_date: Mapped[Optional[date]] = mapped_column(Date)
     end_date: Mapped[Optional[date]] = mapped_column(Date)
-    is_current: Mapped[bool] = mapped_column(Boolean, default=False)
     order: Mapped[int] = mapped_column(Integer, default=0)
 
     resume: Mapped[Resume] = relationship(back_populates="educations")

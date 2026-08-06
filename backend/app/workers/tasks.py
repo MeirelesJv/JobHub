@@ -1,6 +1,6 @@
 import logging
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import redis as _redis
 
@@ -190,20 +190,97 @@ def sync_catho_jobs(
     return {"jobs_found": total_found, "jobs_new": total_new}
 
 
+_ALL_PLATFORMS = {"linkedin", "gupy", "vagas", "infojobs", "catho"}
+
+
 @celery_app.task(name="app.workers.tasks.sync_all_jobs")
 def sync_all_jobs(
     locations: list | None = None,
     keywords: list | None = None,
+    platforms: list[str] | None = None,
 ) -> dict:
-    sync_linkedin_jobs.delay(keywords=keywords, locations=locations)
-    sync_gupy_jobs.delay(keywords=keywords, locations=locations)
-    sync_vagas_jobs.delay(keywords=keywords, locations=locations)
-    sync_infojobs_jobs.delay(keywords=keywords, locations=locations)
-    sync_catho_jobs.delay(keywords=keywords, locations=locations)
-    return {"status": "enqueued"}
+    """platforms: subset of _ALL_PLATFORMS to sync, or None for all."""
+    enabled = _ALL_PLATFORMS if platforms is None else (_ALL_PLATFORMS & set(platforms))
+
+    if "linkedin" in enabled:
+        sync_linkedin_jobs.delay(keywords=keywords, locations=locations)
+    if "gupy" in enabled:
+        sync_gupy_jobs.delay(keywords=keywords, locations=locations)
+    if "vagas" in enabled:
+        sync_vagas_jobs.delay(keywords=keywords, locations=locations)
+    if "infojobs" in enabled:
+        sync_infojobs_jobs.delay(keywords=keywords, locations=locations)
+    if "catho" in enabled:
+        sync_catho_jobs.delay(keywords=keywords, locations=locations)
+    return {"status": "enqueued", "platforms": sorted(enabled)}
 
 
-_ALL_PLATFORMS = {"linkedin", "gupy", "vagas", "infojobs", "catho"}
+@celery_app.task(name="app.workers.tasks.sync_default_user_jobs")
+def sync_default_user_jobs() -> dict:
+    """Beat entry point: syncs only the platforms the single local user has enabled."""
+    from app.core.deps import SINGLE_USER_ID
+    from app.database import SessionLocal
+    from app.models.user import User
+
+    db = SessionLocal()
+    try:
+        user = db.get(User, SINGLE_USER_ID)
+        platforms = user.auto_sync_platforms if user else None
+    finally:
+        db.close()
+
+    return sync_all_jobs(locations=None, keywords=None, platforms=platforms)
+
+
+@celery_app.task(name="app.workers.tasks.maybe_run_scheduled_sync")
+def maybe_run_scheduled_sync() -> dict:
+    """Beat entry point (every 10min): triggers a full sync only when the user's
+    configured interval has elapsed since the last automatic sync — and only once
+    the user has (a) searched at least once manually before and (b) configured at
+    least one desired role. Without those, background sync has nothing meaningful
+    to search for and would just churn on defaults no one asked for."""
+    from app.core.deps import SINGLE_USER_ID
+    from app.database import SessionLocal
+    from app.models.desired_role import UserDesiredRole
+    from app.models.sync_log import SyncLog
+    from app.models.user import User
+
+    with _task_lock("lock:maybe_run_scheduled_sync", ttl=540) as acquired:
+        if not acquired:
+            return {"status": "skipped_locked"}
+
+        db = SessionLocal()
+        try:
+            user = db.get(User, SINGLE_USER_ID)
+            if not user:
+                return {"status": "no_user"}
+
+            has_desired_role = (
+                db.query(UserDesiredRole.id).filter_by(user_id=user.id).first() is not None
+                or bool(user.desired_role)
+            )
+            if not has_desired_role:
+                return {"status": "skipped_no_desired_role"}
+
+            has_searched_before = (
+                db.query(SyncLog.id).filter_by(user_id=user.id).first() is not None
+            )
+            if not has_searched_before:
+                return {"status": "skipped_never_searched"}
+
+            now = datetime.now(timezone.utc)
+            interval = timedelta(minutes=user.sync_interval_minutes)
+            due = user.last_auto_sync_at is None or (now - user.last_auto_sync_at) >= interval
+            if not due:
+                return {"status": "not_due"}
+
+            user.last_auto_sync_at = now
+            db.commit()
+            platforms = user.auto_sync_platforms
+        finally:
+            db.close()
+
+    return sync_all_jobs(locations=None, keywords=None, platforms=platforms)
 
 
 @celery_app.task(name="app.workers.tasks.sync_jobs_for_user", bind=True)
