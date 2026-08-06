@@ -406,7 +406,9 @@ function ExperienceSection({ items, curatedKeywords }: { items: Experience[]; cu
             <FormInput label="Localização" value={form.location} onChange={(e) => set('location', e.target.value)} placeholder="São Paulo, SP (ou Remoto)" />
             <div className="grid grid-cols-2 gap-3">
               <FormInput label="Início" type="month" value={form.start_date} onChange={(e) => set('start_date', e.target.value)} />
-              <FormInput label="Fim" type="month" value={form.end_date} disabled={form.is_current} onChange={(e) => set('end_date', e.target.value)} />
+              {!form.is_current && (
+                <FormInput label="Fim" type="month" value={form.end_date} onChange={(e) => set('end_date', e.target.value)} />
+              )}
             </div>
             <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300 cursor-pointer">
               <input type="checkbox" checked={form.is_current} onChange={(e) => set('is_current', e.target.checked)} className="rounded border-gray-300 dark:border-gray-500 dark:bg-gray-700 text-primary-600 focus:ring-primary-500" />
@@ -561,7 +563,7 @@ function EducationSection({ items }: { items: Education[] }) {
               </div>
               {edu.institution && <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5">{edu.institution}</p>}
               <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-                {fmtDate(edu.start_date)} →{' '}
+                {edu.start_date && `${fmtDate(edu.start_date)} → `}
                 {edu.status === 'cursando'
                   ? (edu.expected_completion_date ? `previsão ${fmtDate(edu.expected_completion_date)}` : 'em andamento')
                   : fmtDate(edu.end_date)}
@@ -613,29 +615,23 @@ function EducationSection({ items }: { items: Education[] }) {
                 onChange={(e) => set('status', e.target.value as EducationStatus)}
               />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <FormInput label="Grau" value={form.degree} onChange={(e) => set('degree', e.target.value)} placeholder="Bacharelado" />
-              <FormInput label="Área / formação" value={form.field_of_study} onChange={(e) => set('field_of_study', e.target.value)} placeholder="Ciência da Computação" />
-            </div>
+            <FormInput label="Área / formação" value={form.field_of_study} onChange={(e) => set('field_of_study', e.target.value)} placeholder="Ciência da Computação" />
             <FormInput
               label="Instituição (opcional — não entra no match)"
               value={form.institution}
               onChange={(e) => set('institution', e.target.value)}
               placeholder="Universidade de São Paulo"
             />
-            <div className="grid grid-cols-2 gap-3">
-              <FormInput label="Início" type="month" value={form.start_date} onChange={(e) => set('start_date', e.target.value)} />
-              {form.status === 'cursando' ? (
-                <FormInput
-                  label="Previsão de conclusão"
-                  type="month"
-                  value={form.expected_completion_date}
-                  onChange={(e) => set('expected_completion_date', e.target.value)}
-                />
-              ) : (
-                <FormInput label="Fim" type="month" value={form.end_date} onChange={(e) => set('end_date', e.target.value)} />
-              )}
-            </div>
+            {form.status === 'cursando' ? (
+              <FormInput
+                label="Previsão de conclusão"
+                type="month"
+                value={form.expected_completion_date}
+                onChange={(e) => set('expected_completion_date', e.target.value)}
+              />
+            ) : (
+              <FormInput label="Fim" type="month" value={form.end_date} onChange={(e) => set('end_date', e.target.value)} />
+            )}
             <FormActions onCancel={closeForm} isPending={isSaving} />
           </form>
         </SectionCard>
@@ -664,9 +660,10 @@ function SkillSection({ items, curatedKeywords }: { items: Skill[]; curatedKeywo
   const [showForm,  setShowForm]  = useState(false)
   const [confirmId, setConfirmId] = useState<number | null>(null)
   const [form, setForm] = useState({ name: '', level: '' })
+  const [suppressSuggestions, setSuppressSuggestions] = useState(false)
 
   const existingNames = new Set(items.map((i) => i.name.toLowerCase()))
-  const suggestions = form.name.trim().length >= 2
+  const suggestions = !suppressSuggestions && form.name.trim().length >= 2
     ? curatedKeywords
         .filter((term) =>
           term.toLowerCase().includes(form.name.trim().toLowerCase()) &&
@@ -734,7 +731,7 @@ function SkillSection({ items, curatedKeywords }: { items: Skill[]; curatedKeywo
                   value={form.name}
                   required
                   autoComplete="off"
-                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                  onChange={(e) => { setSuppressSuggestions(false); setForm((f) => ({ ...f, name: e.target.value })) }}
                   placeholder="React, Python, SQL…"
                 />
                 {suggestions.length > 0 && (
@@ -743,7 +740,7 @@ function SkillSection({ items, curatedKeywords }: { items: Skill[]; curatedKeywo
                       <button
                         key={s}
                         type="button"
-                        onClick={() => setForm((f) => ({ ...f, name: s }))}
+                        onClick={() => { setSuppressSuggestions(true); setForm((f) => ({ ...f, name: s })) }}
                         className="w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 capitalize"
                       >
                         {s}

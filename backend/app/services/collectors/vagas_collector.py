@@ -51,7 +51,7 @@ _JOB_LINK_RE = re.compile(
     re.I | re.S,
 )
 _TAG_RE = re.compile(r"<[^>]+>")
-_REMOTE_KEYWORDS = frozenset(["100% home office", "home office", "remoto", "remote", "hibrido"])
+_REMOTE_KEYWORDS = frozenset(["100% home office", "home office", "remoto", "remote"])
 _STOPWORDS = frozenset(["a", "as", "o", "os", "de", "da", "das", "do", "dos", "e", "em", "para"])
 _BROAD_ROLE_TERMS = frozenset([
     "analista", "analyst", "especialista", "specialist",

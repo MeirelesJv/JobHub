@@ -57,7 +57,7 @@ _JSON_LD_RE = re.compile(
     re.I | re.S,
 )
 _TAG_RE = re.compile(r"<[^>]+>")
-_REMOTE_KEYWORDS = frozenset(["home office", "remoto", "remote", "híbrido", "hibrido"])
+_REMOTE_KEYWORDS = frozenset(["home office", "remoto", "remote"])
 
 _SYNONYM_GROUPS: list[frozenset[str]] = [
     frozenset(["desenvolvedor", "developer", "dev", "programador", "engineer", "engenheiro"]),

@@ -59,7 +59,7 @@ _FOREIGN_MARKERS = frozenset([
     "portugal", "lisboa", "porto,",
 ])
 
-_REMOTE_KEYWORDS = frozenset(["remoto", "remote", "home office", "híbrido", "hibrido"])
+_REMOTE_KEYWORDS = frozenset(["remoto", "remote", "home office"])
 _STOPWORDS = frozenset(["a", "as", "o", "os", "de", "da", "das", "do", "dos", "e", "em", "para"])
 _BROAD_ROLE_TERMS = frozenset([
     "analista", "analyst", "especialista", "specialist",

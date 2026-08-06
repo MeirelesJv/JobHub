@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.models.job import JobLevel, JobPlatform
 from app.models.platform import Platform
-from app.services.collectors.html_utils import format_gupy_description
+from app.services.collectors.html_utils import format_gupy_description, html_to_text
 from app.services.job_service import (
     close_sync_log,
     compute_sync_cutoff,
@@ -107,7 +107,14 @@ window.navigator.permissions.query = (params) => {
 };
 """
 
-_REMOTE_KEYWORDS = frozenset(["remoto", "remote", "home office", "híbrido", "hibrido"])
+_REMOTE_KEYWORDS = frozenset(["remoto", "remote", "home office"])
+
+# Vagas marcadas como "hybrid" no campo estruturado, mas cuja descrição oferece
+# remoto como alternativa explícita (ex: "Híbrido ou remoto") — texto puro, sem tags.
+_HYBRID_OR_REMOTE_RE = re.compile(
+    r"h[ií]brido\s+ou\s+remot[oa]|remot[oa]\s+ou\s+h[ií]brido",
+    re.IGNORECASE,
+)
 
 _SYNONYM_GROUPS: list[frozenset[str]] = [
     frozenset(["desenvolvedor", "developer", "dev", "programador", "engineer", "engenheiro"]),
@@ -208,7 +215,10 @@ def _parse_job(raw: dict) -> dict | None:
             pass
 
     workplace = (raw.get("workplaceType") or "").lower()
-    remote    = workplace in ("remote", "hybrid", "remoto", "híbrido")
+    remote    = workplace in ("remote", "remoto")
+    if not remote and workplace == "hybrid":
+        desc_text = html_to_text(raw.get("description") or "") or ""
+        remote = bool(_HYBRID_OR_REMOTE_RE.search(desc_text))
 
     expires_at = None
     expires_raw = raw.get("applicationDeadline") or raw.get("expiresAt") or raw.get("registerEndDate")

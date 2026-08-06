@@ -35,7 +35,7 @@ MAX_PAGES = 12
 FETCH_RETRIES = 3
 
 _HEADERS = {"Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8"}
-_REMOTE_KEYWORDS = frozenset(["home office", "remoto", "remote", "híbrido", "hibrido", "trabalhe de casa"])
+_REMOTE_KEYWORDS = frozenset(["home office", "remoto", "remote", "trabalhe de casa"])
 _CITY_STATES = {
     "sao-paulo": "sp",
     "rio-de-janeiro": "rj",

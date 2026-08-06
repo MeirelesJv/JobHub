@@ -277,10 +277,25 @@ def maybe_run_scheduled_sync() -> dict:
             user.last_auto_sync_at = now
             db.commit()
             platforms = user.auto_sync_platforms
+
+            roles = (
+                db.query(UserDesiredRole)
+                .filter_by(user_id=user.id)
+                .order_by(UserDesiredRole.is_primary.desc(), UserDesiredRole.order)
+                .all()
+            )
+            if roles:
+                keywords = [r.role_name for r in roles]
+            elif user.desired_role:
+                keywords = [user.desired_role]
+            else:
+                keywords = None  # guarded above by has_desired_role, unreachable in practice
+
+            locations = [user.location_preference.split(",")[0].strip()] if user.location_preference else None
         finally:
             db.close()
 
-    return sync_all_jobs(locations=None, keywords=None, platforms=platforms)
+    return sync_all_jobs(locations=locations, keywords=keywords, platforms=platforms)
 
 
 @celery_app.task(name="app.workers.tasks.sync_jobs_for_user", bind=True)
